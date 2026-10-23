@@ -1,6 +1,7 @@
 package git_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -106,5 +107,60 @@ func TestConflictDetection(t *testing.T) {
 	files, err := g.ConflictedFiles()
 	if err != nil || len(files) != 1 || files[0] != "README.md" {
 		t.Fatalf("ConflictedFiles = %v, %v", files, err)
+	}
+}
+
+func TestIncludes(t *testing.T) {
+	tr := testutil.NewRepo(t)
+	g := &git.Repo{Dir: tr.Dir}
+	tr.Git("checkout", "--quiet", "-b", "feat")
+	first := tr.Commit("a.txt", "a\n", "a")
+	tr.Git("commit", "--quiet", "--amend", "-m", "a amended")
+	if !g.Includes("feat", first) {
+		t.Fatal("a commit rewritten away is no longer seen as included")
+	}
+	if !g.Includes("feat", tr.Git("rev-parse", "main")) {
+		t.Fatal("an ancestor is not included")
+	}
+	other := tr.Clone()
+	foreign := other.Commit("x.txt", "x\n", "someone else's")
+	other.Git("push", "--quiet", "origin", "main")
+	tr.Git("fetch", "--quiet")
+	if g.Includes("feat", foreign) {
+		t.Fatal("a commit never in the branch is seen as included")
+	}
+}
+
+func TestBranchNamesAndTags(t *testing.T) {
+	tr := testutil.NewRepo(t)
+	g := &git.Repo{Dir: tr.Dir}
+	tr.Git("checkout", "--quiet", "-b", "release")
+	tr.Git("tag", "release")
+	if b, err := g.CurrentBranch(); err != nil || b != "release" {
+		t.Fatalf("CurrentBranch with a same-named tag = %q, %v", b, err)
+	}
+	for _, bad := range []string{"@{-1}", "@", "-x", "a..b"} {
+		if g.ValidBranchName(bad) {
+			t.Errorf("ValidBranchName(%q) = true", bad)
+		}
+	}
+	if !g.ValidBranchName("feature/x") {
+		t.Error("ValidBranchName(feature/x) = false")
+	}
+}
+
+func TestCheckoutMissingBranchNamedLikePath(t *testing.T) {
+	tr := testutil.NewRepo(t)
+	g := &git.Repo{Dir: tr.Dir}
+	tr.Commit("docs/guide.md", "v1\n", "docs")
+	tr.Git("checkout", "--quiet", "-b", "b")
+	if err := os.WriteFile(filepath.Join(tr.Dir, "docs", "guide.md"), []byte("edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Checkout("docs"); err == nil {
+		t.Fatal("checking out a missing branch succeeded")
+	}
+	if st := tr.Git("status", "--porcelain"); st == "" {
+		t.Fatal("the uncommitted edit under docs/ was discarded")
 	}
 }

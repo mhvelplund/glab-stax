@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -77,6 +78,9 @@ func (a *App) runModify(cont, abort bool) error {
 		if err := a.checkNoAutoMerge(s); err != nil {
 			return err
 		}
+		if len(s.Active()) == 0 { // GitLab says the rest was merged meanwhile
+			return exitcode.New(exitcode.Generic, "every layer is merged; nothing to modify")
+		}
 		ranges, err := m.Ranges(s)
 		if err != nil {
 			return err
@@ -90,6 +94,16 @@ func (a *App) runModify(cont, abort bool) error {
 			nodes = append(nodes, &tui.ModifyNode{Name: b.Name, Orig: b.Name, Sources: []string{b.Name}, Commits: n})
 		}
 		e := tui.NewModifyEditor(nodes)
+		g := a.repo()
+		e.ValidName = func(name, orig string) string {
+			if name == s.Trunk || !g.ValidBranchName(name) {
+				return fmt.Sprintf("%q is not a usable branch name", name)
+			}
+			if name != orig && g.BranchExists(name) {
+				return fmt.Sprintf("branch %q already exists", name)
+			}
+			return ""
+		}
 		e.Details = func(branch, kind string) string {
 			rg := ranges[branch].Base + ".." + ranges[branch].Tip
 			args := []string{"log", "--oneline", rg}
@@ -126,7 +140,7 @@ func (a *App) checkNoAutoMerge(s *stack.Stack) error {
 	if err != nil {
 		return nil
 	}
-	known, err := engine.SyncMRs(c, s)
+	known, err := engine.SyncMRs(c, a.repo(), s)
 	if err != nil {
 		return nil
 	}

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -75,5 +77,37 @@ func TestPickerSearchAndTabs(t *testing.T) {
 	}
 	if v := p.View(); v == "" {
 		t.Fatal("empty view")
+	}
+}
+
+func TestPickerSearchKeys(t *testing.T) {
+	p := NewPicker("Pick", []Item{{Title: "remote api"}, {Title: "local one"}})
+	keys(p, "/", "e")
+	p.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}) // what bubbletea sends
+	keys(p, "a", "ø", "backspace")
+	if p.query != "e a" {
+		t.Fatalf("query = %q, want %q", p.query, "e a")
+	}
+	p.Update(tea.KeyMsg{Type: tea.KeyCtrlH}) // backspace on some terminals
+	if p.query != "e " {
+		t.Fatalf("query after ^H = %q", p.query)
+	}
+}
+
+func TestPickerScrollsLongLists(t *testing.T) {
+	var items []Item
+	for i := range 50 {
+		items = append(items, Item{Title: fmt.Sprintf("item %02d", i)})
+	}
+	p := NewPicker("Pick", items)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	if v := p.View(); !strings.Contains(v, "item 00") || strings.Contains(v, "item 20") || strings.Count(v, "\n") > 12 {
+		t.Fatalf("view does not fit:\n%s", v)
+	}
+	for range 30 {
+		keys(p, "j")
+	}
+	if v := p.View(); !strings.Contains(v, "› item 30") || strings.Contains(v, "item 00") {
+		t.Fatalf("cursor not in view:\n%s", v)
 	}
 }

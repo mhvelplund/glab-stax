@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
 
@@ -125,11 +126,11 @@ func TestPrintPathAndWorktrees(t *testing.T) {
 		t.Fatalf("bottom into foreign worktree: exit %d", got)
 	}
 	r := h.must("bottom", "--print-path")
-	if !samePath(strings.TrimSpace(r.out), other) || h.current() != "c" {
+	if !git.SamePath(strings.TrimSpace(r.out), other) || h.current() != "c" {
 		t.Fatalf("print-path = %q, current %s", r.out, h.current())
 	}
 	r = h.must("down", "--print-path")
-	if !samePath(strings.TrimSpace(r.out), h.repo.Dir) || h.current() != "b" {
+	if !git.SamePath(strings.TrimSpace(r.out), h.repo.Dir) || h.current() != "b" {
 		t.Fatalf("print-path = %q, current %s", r.out, h.current())
 	}
 }
@@ -142,4 +143,37 @@ func mutateFile(h *harness, fn func(f *stack.File)) error {
 	}
 	fn(f)
 	return st.Save(f)
+}
+
+// A layer named like a top-level directory still shows its last commit.
+func TestViewBranchNamedLikeDirectory(t *testing.T) {
+	h := newHarness(t)
+	if err := os.MkdirAll(h.repo.Dir+"/docs", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.repo.Commit("docs/x.md", "x\n", "docs dir")
+	h.must("init", "docs")
+	h.repo.Commit("docs/y.md", "y\n", "y1")
+	var d viewData
+	if err := json.Unmarshal([]byte(h.must("view", "--json").out), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Branches[0].Subject != "y1" {
+		t.Fatalf("branch docs = %+v", d.Branches[0])
+	}
+}
+
+// A tag named like the checked-out layer does not hide the branch.
+func TestTagNamedLikeLayer(t *testing.T) {
+	h := threeLayers(t)
+	h.repo.Git("tag", "c", "main")
+	h.repo.Git("tag", "b", "main")
+	if out := h.must("view", "--short").out; !strings.Contains(out, "● c") {
+		t.Fatalf("view:\n%s", out)
+	}
+	h.repo.Git("checkout", "--quiet", "a")
+	h.repo.Git("commit", "--quiet", "--amend", "-m", "a1 amended")
+	h.must("rebase", "--no-trunk")
+	h.assertStacked("a", "refs/heads/b", "2")
+	h.assertStacked("refs/heads/b", "refs/heads/c", "1")
 }

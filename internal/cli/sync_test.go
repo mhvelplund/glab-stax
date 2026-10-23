@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -188,5 +189,120 @@ func TestSyncSingleMRSkipsBlocks(t *testing.T) {
 	r := h.must("sync")
 	if !strings.Contains(r.err, "Branches synced") || len(h.gl.CallsTo("PUT")) != 0 {
 		t.Fatalf("report:\n%s\nPUTs: %v", r.err, h.gl.CallsTo("PUT"))
+	}
+}
+
+// The current worktree is on the merged bottom layer and the next layer is
+// checked out in another worktree: pruning must not fail the sync.
+func TestSyncPruneWhenNextLayerInOtherWorktree(t *testing.T) {
+	h := submitted(t)
+	h.repo.Git("checkout", "--quiet", "a")
+	wt := filepath.Join(t.TempDir(), "wt-b")
+	h.repo.Git("worktree", "add", "--quiet", wt, "b")
+	h.repo.PushFromElsewhere("main", "a.txt", "a\n", "a1 (squashed !1)")
+	h.gl.MRs[1].State = "merged"
+
+	h.must("sync", "--prune")
+	if !h.file().Stacks[0].Branches[0].Merged {
+		t.Fatal("a's merge was not recorded")
+	}
+	// A later trunk move still restacks cleanly.
+	h.repo.PushFromElsewhere("main", "up.txt", "up\n", "more upstream")
+	h.must("sync")
+	h.assertStacked("main", "b", "2")
+}
+
+// A merged layer with commits that never reached GitLab is not deleted.
+func TestSyncPruneKeepsUnmergedCommits(t *testing.T) {
+	h := submitted(t)
+	h.repo.Git("checkout", "--quiet", "a")
+	extra := h.repo.Commit("late.txt", "late\n", "follow-up after the merge")
+	h.repo.Git("checkout", "--quiet", "c")
+	h.repo.PushFromElsewhere("main", "a.txt", "a\n", "a1 (squashed !1)")
+	h.gl.MRs[1].State = "merged"
+
+	r := h.must("sync", "--prune")
+	if h.sha("a") != extra || !strings.Contains(r.err, "Kept a") {
+		t.Fatalf("a was deleted or moved:\n%s", r.err)
+	}
+}
+
+// Keeping the local stack does not edit merged MRs.
+func TestSyncKeepLocalLeavesMergedMRsAlone(t *testing.T) {
+	h := submitted(t)
+	h.gl.Add(glab.MR{IID: 8, Title: "old", SourceBranch: "old", TargetBranch: "main", State: "merged"})
+	h.gl.Add(glab.MR{IID: 9, Title: "x", SourceBranch: "x", TargetBranch: "b"})
+	info := glab.StackInfo{Trunk: "main", MRs: []glab.StackItem{{IID: 8, Branch: "old"}, {IID: 1, Branch: "a"}, {IID: 2, Branch: "b"}, {IID: 9, Branch: "x"}}}
+	for _, iid := range []int{1, 2, 8, 9} {
+		h.gl.MRs[iid].Description = glab.RenderBlock(info, iid)
+	}
+	other := h.repo.Clone()
+	other.Git("checkout", "--quiet", "-b", "x", "origin/b")
+	other.Commit("x.txt", "x\n", "x1")
+	other.Git("push", "--quiet", "origin", "x")
+	before := h.gl.MRs[8].Description
+	if r := h.runIn(h.repo.Dir, "2\n", true, "sync"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if h.gl.MRs[8].Description != before {
+		t.Fatal("the description of merged !8 was edited")
+	}
+	if _, ok := glab.ParseBlock(h.gl.MRs[9].Description); ok {
+		t.Fatal("x's MR still has a stack block")
+	}
+}
+
+// Adopting GitLab's stack works when a merged layer's branch is gone.
+func TestSyncAdoptRemoteWithDeletedMergedBranch(t *testing.T) {
+	h := submitted(t)
+	h.gl.Add(glab.MR{IID: 9, Title: "z", SourceBranch: "z", TargetBranch: "main", State: "merged"})
+	info := glab.StackInfo{Trunk: "main", MRs: []glab.StackItem{{IID: 9, Branch: "z"}, {IID: 1, Branch: "a"}, {IID: 2, Branch: "b"}, {IID: 3, Branch: "c"}}}
+	for _, iid := range []int{1, 2, 3, 9} {
+		h.gl.MRs[iid].Description = glab.RenderBlock(info, iid)
+	}
+	if r := h.runIn(h.repo.Dir, "1\n", true, "sync"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	s := h.file().Stacks[0]
+	if got := names(s); strings.Join(got, ",") != "z,a,b,c" || !s.Branches[0].Merged {
+		t.Fatalf("stack = %v", got)
+	}
+}
+
+// Merged layers dropped from a fully merged stack are not replayed when the
+// new bottom layer, which still contains their commits, is restacked.
+func TestSyncAfterFreshStackOnSquashMergedLayer(t *testing.T) {
+	h := newHarness(t)
+	h.must("init", "a")
+	h.repo.Commit("a.txt", "a\n", "a1")
+	h.repo.Commit("a.txt", "a\nmore\n", "a2")
+	h.must("submit", "--auto")
+	h.repo.PushFromElsewhere("main", "a.txt", "a\nmore\n", "a (squashed !1)")
+	h.gl.MRs[1].State = "merged"
+	writeFile(t, h.repo.Dir+"/d.txt", "d\n")
+	h.must("add", "-A", "-m", "d")
+	h.must("submit", "--auto") // drops merged a from the stack
+	h.repo.PushFromElsewhere("main", "up.txt", "up\n", "upstream")
+	h.must("sync")
+	h.assertStacked("main", "03-24-d", "1")
+}
+
+// Keeping the local stack also fixes the block of a single remaining MR, so
+// the next sync does not find the stacks diverged again.
+func TestSyncKeepLocalWithSingleMR(t *testing.T) {
+	h := newHarness(t)
+	h.must("init", "a")
+	h.repo.Commit("a.txt", "a\n", "a1")
+	h.must("submit", "--auto")
+	h.gl.Add(glab.MR{IID: 2, Title: "z", SourceBranch: "z", TargetBranch: "main"})
+	info := glab.StackInfo{Trunk: "main", MRs: []glab.StackItem{{IID: 2, Branch: "z"}, {IID: 1, Branch: "a"}}}
+	for _, iid := range []int{1, 2} {
+		h.gl.MRs[iid].Description = glab.RenderBlock(info, iid)
+	}
+	if r := h.runIn(h.repo.Dir, "2\n", true, "sync"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if r := h.run("sync"); r.e != nil {
+		t.Fatalf("second sync: %v\n%s", r.e, r.err)
 	}
 }

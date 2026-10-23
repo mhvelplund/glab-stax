@@ -101,7 +101,7 @@ func TestSubmitEditorLinkExisting(t *testing.T) {
 func TestSubmitEditorOpenURLAndHelp(t *testing.T) {
 	e := NewSubmitEditor(nodes())
 	var opened string
-	e.openURL = func(u string) error { opened = u; return nil }
+	e.OpenURL = func(u string) error { opened = u; return nil }
 	press(e, runes("j"), runes("j"), tea.KeyMsg{Type: tea.KeyCtrlO})
 	if opened != "https://x/1" {
 		t.Fatalf("opened %q", opened)
@@ -113,5 +113,20 @@ func TestSubmitEditorOpenURLAndHelp(t *testing.T) {
 	press(e, runes("x"))
 	if strings.Contains(e.View(), "— keys") {
 		t.Fatal("help not closed")
+	}
+}
+
+func TestSubmitEditorKeepsUneditedBody(t *testing.T) {
+	body := "| a | b |\r\n|---|---|\r\n\tcode"
+	e := NewSubmitEditor([]*SubmitNode{{Branch: "a", Target: "main", Include: true, Title: "t", Body: body}})
+	press(e, tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyEsc}, tea.KeyMsg{Type: tea.KeyCtrlS})
+	if !e.Submitted || e.Nodes[0].Body != body {
+		t.Fatalf("body rewritten: %q", e.Nodes[0].Body)
+	}
+	// ^H in a field deletes instead of opening help.
+	e = NewSubmitEditor([]*SubmitNode{{Branch: "a", Target: "main", Include: true, Title: "abc"}})
+	press(e, tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyCtrlH})
+	if e.help || e.title.Value() != "ab" {
+		t.Fatalf("help %v, title %q", e.help, e.title.Value())
 	}
 }

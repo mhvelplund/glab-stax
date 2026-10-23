@@ -23,6 +23,11 @@ type ModifyEditor struct {
 	Applied bool
 	// Details returns text for the f (files) and c (commits) panels.
 	Details func(branch, kind string) string
+	// ValidName, if set, checks a new or renamed layer's name (orig is the
+	// layer's original branch, "" for an inserted one) and returns why it is
+	// unusable, or "". Names are checked here so that the staged changes
+	// survive a bad name.
+	ValidName func(name, orig string) string
 
 	cursor     int
 	history    [][]*ModifyNode
@@ -239,6 +244,16 @@ func (e *ModifyEditor) handleInput(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			e.status = fmt.Sprintf("%q is already in the stack", name)
 			return e, nil
 		}
+		if e.ValidName != nil {
+			orig := ""
+			if mode == "rename" {
+				orig = n.Orig
+			}
+			if msg := e.ValidName(name, orig); msg != "" {
+				e.status = msg
+				return e, nil
+			}
+		}
 		e.snapshot()
 		switch mode {
 		case "rename":
@@ -277,7 +292,7 @@ func (e *ModifyEditor) View() string {
 			notes = append(notes, "commits of "+strings.Join(n.Sources, " + "))
 		}
 		if n.Orig != "" {
-			notes = append(notes, plural(n.Commits, "commit"))
+			notes = append(notes, Plural(n.Commits, "commit"))
 		}
 		line := n.Name
 		if n.Dropped {
@@ -307,7 +322,8 @@ func (e *ModifyEditor) View() string {
 	return b.String()
 }
 
-func plural(n int, unit string) string {
+// Plural formats a count with a unit, e.g. "1 commit" or "3 commits".
+func Plural(n int, unit string) string {
 	if n == 1 {
 		return "1 " + unit
 	}

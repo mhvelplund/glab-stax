@@ -83,7 +83,7 @@ func TestAPIArgsAndErrors(t *testing.T) {
 	if err != nil || mr.IID != 5 {
 		t.Fatalf("FindMRForBranch = %+v, %v", mr, err)
 	}
-	want := []string{"api", "--hostname", "gl.example", "--placeholder", "project=g/r", "-X", "GET", "projects/:project/merge_requests",
+	want := []string{"api", "--hostname", "gl.example", "-X", "GET", "projects/g%2Fr/merge_requests",
 		"-f", "order_by=created_at", "-f", "sort=desc", "-f", "source_branch=feat", "-f", "state=all"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args =\n%v\nwant\n%v", got, want)
@@ -92,5 +92,28 @@ func TestAPIArgsAndErrors(t *testing.T) {
 	c.Run = func(...string) ([]byte, error) { return nil, errors.New("401 Unauthorized") }
 	if _, err := c.GetMR(1); exitcode.Of(err) != exitcode.GitLabFailure {
 		t.Fatalf("GetMR error exit = %d", exitcode.Of(err))
+	}
+}
+
+func TestStripBlockKeepsParagraphs(t *testing.T) {
+	info := StackInfo{Trunk: "main", MRs: []StackItem{{1, "a"}}}
+	desc := "Intro.\n\n" + RenderBlock(info, 1) + "\n\nCloses #12"
+	if got := SetBlock(desc, RenderBlock(info, 1)); !strings.HasPrefix(got, "Intro.\n\nCloses #12\n\n<!--") {
+		t.Fatalf("text around the block was merged into one paragraph:\n%q", got)
+	}
+	if got := StripBlock(RenderBlock(info, 1) + "\n\nAfter."); got != "After." {
+		t.Fatalf("StripBlock = %q", got)
+	}
+}
+
+func TestForkMRsAreIgnored(t *testing.T) {
+	c := &Client{Project: Project{"gl.example", "g/r"}, Run: func(args ...string) ([]byte, error) {
+		return []byte(`[{"iid":9,"state":"opened","source_project_id":77,"target_project_id":5},{"iid":4,"state":"merged","source_project_id":5,"target_project_id":5}]`), nil
+	}}
+	if mr, err := c.FindMRForBranch("fix"); err != nil || mr == nil || mr.IID != 4 {
+		t.Fatalf("FindMRForBranch = %+v, %v", mr, err)
+	}
+	if list, err := c.ListMRsTargeting("fix"); err != nil || len(list) != 1 || list[0].IID != 4 {
+		t.Fatalf("ListMRsTargeting = %+v, %v", list, err)
 	}
 }

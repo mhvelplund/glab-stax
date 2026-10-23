@@ -46,16 +46,21 @@ type SubmitEditor struct {
 	Cancelled bool
 	LinkOnly  bool // ^b: only link the existing MRs
 
-	cursor     int // index into Nodes
-	focus      submitFocus
-	title      textinput.Model
-	body       textarea.Model
-	help       bool
-	confirming bool
-	dirty      bool
-	status     string
-	// openURL opens a URL in the browser (overridable in tests).
-	openURL func(url string) error
+	// OpenURL opens a URL in the browser (^o).
+	OpenURL func(url string) error
+
+	cursor int // index into Nodes
+	focus  submitFocus
+	title  textinput.Model
+	body   textarea.Model
+	// loadedTitle and loadedBody are what the fields showed when the focused
+	// node was loaded. The fields rewrite their input (tabs, line endings), so
+	// a node keeps its original text unless the field was actually edited.
+	loadedTitle, loadedBody string
+	help                    bool
+	confirming              bool
+	dirty                   bool
+	status                  string
 }
 
 type editorDoneMsg struct {
@@ -72,7 +77,7 @@ func NewSubmitEditor(nodes []*SubmitNode) *SubmitEditor {
 	ta.SetHeight(8)
 	ta.SetWidth(72)
 	ta.ShowLineNumbers = false
-	e := &SubmitEditor{Nodes: nodes, cursor: len(nodes) - 1, title: ti, body: ta, openURL: openBrowser}
+	e := &SubmitEditor{Nodes: nodes, cursor: len(nodes) - 1, title: ti, body: ta, OpenURL: OpenBrowser}
 	e.load()
 	return e
 }
@@ -88,19 +93,22 @@ func (e *SubmitEditor) load() {
 	}
 	n := e.node()
 	e.title.SetValue(n.Title)
-	e.body.SetValue(n.Body)
+	e.body.SetValue(strings.ReplaceAll(n.Body, "\r\n", "\n"))
+	e.loadedTitle, e.loadedBody = e.title.Value(), e.body.Value()
 }
 
-// store copies the text fields back into the focused node.
+// store copies edited text fields back into the focused node.
 func (e *SubmitEditor) store() {
 	n := e.node()
 	if !n.isNew() {
 		return
 	}
-	if n.Title != e.title.Value() || n.Body != e.body.Value() {
-		e.dirty = true
+	if v := e.title.Value(); v != e.loadedTitle {
+		n.Title, e.loadedTitle, e.dirty = v, v, true
 	}
-	n.Title, n.Body = e.title.Value(), e.body.Value()
+	if v := e.body.Value(); v != e.loadedBody {
+		n.Body, e.loadedBody, e.dirty = v, v, true
+	}
 }
 
 func (e *SubmitEditor) setFocus(f submitFocus) {
@@ -182,9 +190,11 @@ func (e *SubmitEditor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editorDoneMsg:
 		if msg.err != nil {
 			e.status = "editor failed: " + msg.err.Error()
-		} else {
-			e.body.SetValue(msg.text)
-			e.store()
+		} else if n := e.node(); n.isNew() {
+			// Keep the editor's text as written; the field only displays it.
+			n.Body, e.dirty = msg.text, true
+			e.body.SetValue(strings.ReplaceAll(msg.text, "\r\n", "\n"))
+			e.loadedBody = e.body.Value()
 		}
 		return e, nil
 	case tea.KeyMsg:
@@ -230,12 +240,9 @@ func (e *SubmitEditor) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		e.store()
 		e.toggleInclude()
 		return e, nil
-	case tea.KeyCtrlH:
-		e.help = true
-		return e, nil
 	case tea.KeyCtrlO:
 		if n := e.node(); n.URL != "" {
-			if err := e.openURL(n.URL); err != nil {
+			if err := e.OpenURL(n.URL); err != nil {
 				e.status = err.Error()
 			}
 		}
@@ -313,7 +320,7 @@ func (e *SubmitEditor) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		e.toggleInclude()
 	case "enter":
 		e.setFocus(focusTitle)
-	case "?":
+	case "?", "ctrl+h": // not while typing: some terminals send ^H for backspace
 		e.help = true
 	case "q", "esc":
 		if e.dirty {
@@ -449,7 +456,7 @@ Existing MRs
 
 Anywhere
   ^s                 submit
-  ? / ^h             toggle this help
+  ? / ^h             show this help (when not editing a field)
   q / esc            quit (asks first if you edited something)
 
 Press any key to close.`
@@ -490,7 +497,8 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-func openBrowser(url string) error {
+// OpenBrowser opens url with the system's opener.
+func OpenBrowser(url string) error {
 	opener := "xdg-open"
 	if _, err := exec.LookPath("open"); err == nil {
 		opener = "open"

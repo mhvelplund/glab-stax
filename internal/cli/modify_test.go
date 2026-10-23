@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,4 +195,96 @@ func TestModifyDroppingCurrentChecksOutTop(t *testing.T) {
 	if h.current() != "b" {
 		t.Fatalf("on %s", h.current())
 	}
+}
+
+// After `git cherry-pick --abort` by hand, --continue builds the layer again
+// instead of dropping its commits.
+func TestModifyContinueAfterManualAbort(t *testing.T) {
+	h := swapConflict(t)
+	oldB := h.sha("b")
+	if r := h.modify("j", "J", "ctrl+s"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("exit %d: %v", exitcode.Of(r.e), r.e)
+	}
+	h.repo.Git("cherry-pick", "--abort")
+	if r := h.run("modify", "--continue"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("--continue after a manual abort: exit %d: %v\n%s", exitcode.Of(r.e), r.e, r.err)
+	}
+	if h.sha("b") != oldB {
+		t.Fatal("b moved while the modify is paused")
+	}
+	h.must("modify", "--abort")
+	if h.sha("b") != oldB || h.count("main", "b") != "4" {
+		t.Fatal("b lost commits")
+	}
+}
+
+// --continue from another worktree finishes the modify where it started.
+func TestModifyContinueFromOtherWorktree(t *testing.T) {
+	h := swapConflict(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	h.repo.Git("worktree", "add", "--quiet", "--detach", wt, "main")
+	if r := h.modify("j", "J", "ctrl+s"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("exit %d: %v", exitcode.Of(r.e), r.e)
+	}
+	r := h.runIn(wt, "", false, "modify", "--continue")
+	for i := 0; exitcode.Of(r.e) == exitcode.RebaseConflict; i++ {
+		if i == 5 {
+			t.Fatalf("still conflicting:\n%s", r.err)
+		}
+		writeFile(t, h.repo.Dir+"/a.txt", fmt.Sprintf("resolved %d\n", i))
+		h.repo.Git("add", "a.txt")
+		r = h.runIn(wt, "", false, "modify", "--continue")
+	}
+	if r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if got := names(h.file().Stacks[0]); strings.Join(got, ",") != "b,a,c" {
+		t.Fatalf("stack = %v", got)
+	}
+	h.assertStacked("b", "a", "1")
+	h.assertStacked("a", "c", "1")
+	if h.repo.Git("-C", wt, "rev-parse", "HEAD") != h.sha("main") {
+		t.Fatal("the other worktree was used to build layers")
+	}
+}
+
+// The remaining layers were merged on GitLab before modify ran.
+func TestModifyWhenEverythingMergedRemotely(t *testing.T) {
+	h := newHarness(t)
+	h.must("init", "a")
+	h.repo.Commit("a.txt", "a\n", "a1")
+	h.must("submit", "--auto")
+	h.gl.MRs[1].State = "merged"
+	r := h.modify("I", "n", "ctrl+s")
+	if r.e == nil || !strings.Contains(r.e.Error(), "every layer is merged") {
+		t.Fatalf("err = %v", r.e)
+	}
+}
+
+// A bad name is refused in the editor, so the other staged changes survive.
+func TestModifyRefusesExistingBranchNameInEditor(t *testing.T) {
+	h := threeLayers(t)
+	// Fold c into b, then try to rename a to "c" (c's branch still exists).
+	r := h.modify("d", "j", "r", "backspace", "c", "enter", "ctrl+s")
+	if r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if got := names(h.file().Stacks[0]); strings.Join(got, ",") != "a,b" {
+		t.Fatalf("stack = %v", got)
+	}
+	h.assertStacked("a", "b", "3")
+}
+
+// A layer restacked by hand onto newer parent commits keeps only its own
+// commit when rebuilt.
+func TestModifyAfterManualRestack(t *testing.T) {
+	h := threeLayers(t)
+	h.repo.Git("checkout", "--quiet", "b")
+	h.repo.Commit("b3.txt", "b\n", "b3")
+	h.repo.Git("checkout", "--quiet", "c")
+	h.repo.Git("rebase", "--quiet", "b")
+	if r := h.modify("r", "2", "enter", "ctrl+s"); r.e != nil { // rename c to c2
+		t.Fatal(r.e, r.err)
+	}
+	h.assertStacked("b", "c2", "1")
 }

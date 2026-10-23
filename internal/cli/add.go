@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
 
@@ -67,11 +68,11 @@ func (a *App) runAdd(o addOptions, name string) error {
 
 		// A layer without commits of its own takes the commit instead of a new branch.
 		if wantsCommit && cur != s.Trunk {
-			own, err := g.RevParse(cur)
+			own, err := g.RevParse(git.Ref(cur))
 			if err != nil {
 				return err
 			}
-			parent, err := g.RevParse(s.Parent(cur))
+			parent, err := g.RevParse(git.Ref(s.Parent(cur)))
 			if err != nil {
 				return err
 			}
@@ -125,7 +126,12 @@ func (a *App) runAdd(o addOptions, name string) error {
 		s.Branches = append(s.Branches, b)
 		if wantsCommit {
 			if _, err := g.Run("commit", "--quiet", "-m", o.message); err != nil {
-				return err
+				// The layer exists and is checked out: keep it in the stack, so
+				// the user can fix the problem and commit there.
+				if serr := a.saveNow(f); serr != nil {
+					a.infof("Warning: could not save stack metadata: %v", serr)
+				}
+				return fmt.Errorf("added %s, but the commit failed: %w", name, err)
 			}
 		}
 		a.infof("Added %s as layer %d", name, len(s.Branches))
@@ -147,12 +153,12 @@ func (a *App) offerInit(f *stack.File, cur string) (*stack.Stack, error) {
 		return nil, exitcode.New(exitcode.NotInStack, "branch %q is not part of a stack", cur)
 	}
 	g := a.repo()
-	remote, err := g.DefaultRemote()
-	if err != nil {
-		remote = "origin"
-	}
+	remote := a.defaultRemote()
 	trunk, err := g.DefaultBranch(remote)
 	if err != nil {
+		return nil, exitcode.Wrap(exitcode.InvalidArgs, err)
+	}
+	if err := a.ensureLocalBranch(remote, trunk); err != nil {
 		return nil, err
 	}
 	s := &stack.Stack{Trunk: trunk, Remote: remote}

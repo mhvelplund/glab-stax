@@ -207,3 +207,86 @@ func TestSwitch(t *testing.T) {
 		t.Fatal("cancel switched branches")
 	}
 }
+
+// Inferring a stack from target branches stops at a protected branch: an
+// open main -> production MR is not a layer.
+func TestCheckoutInferenceStopsAtProtectedBranch(t *testing.T) {
+	h := newHarness(t)
+	h.repo.Git("checkout", "--quiet", "-b", "feature")
+	h.repo.Commit("f.txt", "f\n", "f1")
+	h.repo.Git("push", "--quiet", "origin", "feature")
+	h.repo.Git("checkout", "--quiet", "main")
+	h.gl.Add(glab.MR{IID: 1, Title: "release", SourceBranch: "main", TargetBranch: "production"})
+	h.gl.Add(glab.MR{IID: 2, Title: "f1", SourceBranch: "feature", TargetBranch: "main"})
+	h.must("checkout", "2")
+	s := h.file().Stacks[0]
+	if s.Trunk != "main" || strings.Join(names(s), ",") != "feature" {
+		t.Fatalf("stack on %s: %v", s.Trunk, names(s))
+	}
+}
+
+// An MR URL of another project is refused rather than applied to this one.
+func TestMRURLOfOtherProject(t *testing.T) {
+	h := threeLayers(t)
+	h.must("submit", "--auto")
+	for _, args := range [][]string{
+		{"checkout", "https://gitlab.example/other/project/-/merge_requests/2"},
+		{"merge", "https://gitlab.example/other/project/-/merge_requests/2", "--yes"},
+		{"unstack", "https://gitlab.example/other/project/-/merge_requests/2"},
+	} {
+		if r := h.run(args...); exitcode.Of(r.e) != exitcode.InvalidArgs {
+			t.Errorf("%v: exit %d: %v", args, exitcode.Of(r.e), r.e)
+		}
+	}
+	if h.run("checkout", "https://gitlab.example/group/repo/-/merge_requests/2").e != nil {
+		t.Error("this project's MR URL was refused")
+	}
+}
+
+// Extending a stack from its top keeps the top MR's target.
+func TestLinkExtendsFromTop(t *testing.T) {
+	h := newHarness(t)
+	h.repo.Git("checkout", "--quiet", "-b", "x")
+	h.repo.Commit("x.txt", "x\n", "x1")
+	h.repo.Git("checkout", "--quiet", "-b", "y")
+	h.repo.Commit("y.txt", "y\n", "y1")
+	h.must("link", "x", "y")
+	h.repo.Git("checkout", "--quiet", "-b", "w")
+	h.repo.Commit("w.txt", "w\n", "w1")
+	h.must("link", "2", "w")
+	if h.gl.MRs[2].TargetBranch != "x" || h.gl.MRs[3].TargetBranch != "y" {
+		t.Fatalf("targets: !2 -> %s, !3 -> %s", h.gl.MRs[2].TargetBranch, h.gl.MRs[3].TargetBranch)
+	}
+	info, _ := glab.ParseBlock(h.gl.MRs[1].Description)
+	var order []string
+	for _, m := range info.MRs {
+		order = append(order, m.Branch)
+	}
+	if strings.Join(order, ",") != "x,y,w" || info.Trunk != "main" {
+		t.Fatalf("block = %+v", info)
+	}
+}
+
+// A teammate checks out a stack whose bottom MR was squash-merged and its
+// branch deleted: the next layer still gets a cut point, so restacks work.
+func TestCheckoutStackWithDeletedMergedBottom(t *testing.T) {
+	h := threeLayers(t)
+	h.must("submit", "--auto")
+	h.gl.MRs[1].State, h.gl.MRs[1].SHA = "merged", h.sha("a")
+	h.repo.PushFromElsewhere("main", "a.txt", "a\n", "a1 (squashed !1)")
+	h.repo.Git("push", "--quiet", "origin", "--delete", "a")
+	tm := h.teammate()
+	if r := h.in(tm, "", false, "checkout", "3"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if b := stacksIn(t, tm).Stacks[0].Get("b"); b.Base != h.sha("a") {
+		t.Fatalf("b's base = %q, want a's last commit", b.Base)
+	}
+	h.repo.PushFromElsewhere("main", "up.txt", "up\n", "upstream")
+	if r := h.in(tm, "", false, "sync"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if got := tm.Git("rev-list", "--count", "origin/main..b"); got != "2" {
+		t.Fatalf("b has %s commits over the trunk, want 2", got)
+	}
+}

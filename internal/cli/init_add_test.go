@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -177,5 +179,55 @@ func TestInvalidBranchNameCreatesNothing(t *testing.T) {
 	h.must("init", "a")
 	if got := exitcode.Of(h.run("add", "bad..name").e); got != exitcode.InvalidArgs {
 		t.Fatalf("add: exit %d", got)
+	}
+}
+
+// add offers to start a stack while the trunk exists only as origin/main.
+func TestAddOfferInitWithoutLocalTrunk(t *testing.T) {
+	h := newHarness(t)
+	h.repo.Git("checkout", "--quiet", "-b", "feature")
+	h.repo.Commit("f.txt", "f\n", "f1")
+	h.repo.Git("branch", "-D", "main")
+	if r := h.runIn(h.repo.Dir, "y\n", true, "add", "next"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if got := names(h.file().Stacks[0]); strings.Join(got, ",") != "feature,next" {
+		t.Fatalf("stack = %v", got)
+	}
+}
+
+// A commit rejected by a hook still leaves the new layer in the stack.
+func TestAddKeepsLayerWhenCommitFails(t *testing.T) {
+	h := newHarness(t)
+	h.must("init", "a")
+	h.repo.Commit("a.txt", "a\n", "a1")
+	hook := filepath.Join(h.repo.Dir, ".git", "hooks", "pre-commit")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho lint failed >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, h.repo.Dir+"/b.txt", "b\n")
+	if r := h.run("add", "-A", "-m", "second layer", "b"); r.e == nil {
+		t.Fatal("add succeeded although the commit failed")
+	}
+	if got := names(h.file().Stacks[0]); strings.Join(got, ",") != "a,b" || h.current() != "b" {
+		t.Fatalf("stack = %v, on %s", got, h.current())
+	}
+}
+
+// A branch that exists only on the remote is adopted, not recreated.
+func TestInitAdoptsRemoteOnlyBranch(t *testing.T) {
+	h := newHarness(t)
+	other := h.repo.Clone()
+	other.Git("checkout", "--quiet", "-b", "feat", "origin/main")
+	feat := other.Commit("feat.txt", "feat\n", "teammate's feat")
+	other.Git("push", "--quiet", "origin", "feat")
+	h.repo.Git("fetch", "--quiet")
+
+	h.must("init", "feat")
+	if h.sha("feat") != feat {
+		t.Fatalf("feat = %s, want the remote's %s", h.sha("feat"), feat)
 	}
 }

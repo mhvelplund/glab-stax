@@ -1,8 +1,10 @@
 package stack
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
@@ -133,4 +135,24 @@ func TestJournal(t *testing.T) {
 	if err := st.ClearJournal(RebaseJournal); err != nil {
 		t.Fatalf("ClearJournal twice: %v", err)
 	}
+}
+
+// Another process has created the lock file but not written its PID yet.
+func TestFreshEmptyLockIsHeld(t *testing.T) {
+	st := Store{Dir: t.TempDir()}
+	if err := os.WriteFile(st.lockPath(), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Lock(); exitcode.Of(err) != exitcode.Locked {
+		t.Fatalf("a lock being written was reclaimed: err = %v", err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(st.lockPath(), old, old); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := st.Lock()
+	if err != nil {
+		t.Fatalf("an old empty lock was not reclaimed: %v", err)
+	}
+	unlock()
 }

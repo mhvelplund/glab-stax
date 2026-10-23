@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
 
@@ -29,12 +30,10 @@ names. The trunk defaults to the remote's default branch. Enables git rerere.`,
 
 func (a *App) runInit(base string, names []string) error {
 	g := a.repo()
-	remote, err := g.DefaultRemote()
-	if err != nil {
-		remote = "origin"
-	}
+	remote := a.defaultRemote()
 	trunk := base
 	if trunk == "" {
+		var err error
 		if trunk, err = g.DefaultBranch(remote); err != nil {
 			return exitcode.Wrap(exitcode.InvalidArgs, err)
 		}
@@ -65,6 +64,15 @@ func (a *App) runInit(base string, names []string) error {
 		s := &stack.Stack{Trunk: trunk, Remote: remote}
 		parent := trunk
 		for _, name := range names {
+			// A branch that so far exists only on the remote is adopted from
+			// there; a new local branch would later be pushed over it.
+			if !g.BranchExists(name) {
+				if _, err := g.RevParse("refs/remotes/" + remote + "/" + name); err == nil {
+					if err := a.ensureLocalBranch(remote, name); err != nil {
+						return err
+					}
+				}
+			}
 			b, err := a.addLayer(parent, name)
 			if err != nil {
 				return err
@@ -98,13 +106,13 @@ func (a *App) runInit(base string, names []string) error {
 func (a *App) addLayer(parent, name string) (*stack.Branch, error) {
 	g := a.repo()
 	if g.BranchExists(name) {
-		base, err := g.MergeBase(parent, name)
+		base, err := g.MergeBase(git.Ref(parent), git.Ref(name))
 		if err != nil {
 			return nil, err
 		}
 		return &stack.Branch{Name: name, Base: base}, nil
 	}
-	base, err := g.RevParse(parent)
+	base, err := g.RevParse(git.Ref(parent))
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +184,7 @@ func (a *App) foreignOwner(branch string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if samePath(owner, top) {
+	if git.SamePath(owner, top) {
 		return "", nil
 	}
 	return owner, nil

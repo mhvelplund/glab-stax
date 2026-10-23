@@ -23,7 +23,7 @@ type App struct {
 	Dir         string
 	In          io.Reader
 	Out, Err    io.Writer
-	Interactive bool // stdin and stdout are terminals
+	Interactive bool // stdin and stderr are terminals: editors and prompts use those
 	OutIsTTY    bool
 	ErrIsTTY    bool
 	Now         func() time.Time
@@ -47,15 +47,16 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	outTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	errTTY := term.IsTerminal(int(os.Stderr.Fd()))
 	return &App{
-		Dir:         dir,
-		In:          os.Stdin,
-		Out:         os.Stdout,
-		Err:         os.Stderr,
-		Interactive: outTTY && term.IsTerminal(int(os.Stdin.Fd())),
-		OutIsTTY:    outTTY,
-		ErrIsTTY:    term.IsTerminal(int(os.Stderr.Fd())),
+		Dir: dir,
+		In:  os.Stdin,
+		Out: os.Stdout,
+		Err: os.Stderr,
+		// Not stdout: `cd "$(glab stax switch --print-path)"` captures it.
+		Interactive: errTTY && term.IsTerminal(int(os.Stdin.Fd())),
+		OutIsTTY:    term.IsTerminal(int(os.Stdout.Fd())),
+		ErrIsTTY:    errTTY,
 		Now:         time.Now,
 		Sleep:       time.Sleep,
 	}, nil
@@ -88,7 +89,9 @@ func (a *App) load() (*stack.File, error) {
 	return st.Load()
 }
 
-// mutate locks the store, loads it, runs fn and saves the result if fn succeeds.
+// mutate locks the store, loads it, runs fn and saves the result if fn
+// succeeds, or if fn paused on a conflict: the paused operation's journal
+// relies on what fn learned before pausing (e.g. layers merged on GitLab).
 // It refuses to run while a multi-step operation is paused.
 func (a *App) mutate(fn func(f *stack.File) error) error {
 	return a.mutateWith(false, fn)
@@ -114,6 +117,11 @@ func (a *App) mutateWith(allowPaused bool, fn func(f *stack.File) error) error {
 		return err
 	}
 	if err := fn(f); err != nil {
+		if exitcode.Of(err) == exitcode.RebaseConflict {
+			if serr := st.Save(f); serr != nil {
+				a.infof("Warning: could not save stack metadata: %v", serr)
+			}
+		}
 		return err
 	}
 	return st.Save(f)

@@ -26,8 +26,12 @@ glab stax merge --yes --squash        # merge bottom-up, restacking between merg
 - `add` must run from the top layer. Check with `glab stax view --json` (`current`, `branches[].isCurrent`).
 - After editing a lower layer (`git commit --amend`, new commits), run `glab stax rebase` to restack the layers above,
   then `glab stax push` or `submit`.
-- On a rebase conflict (exit code 3): resolve the files, `git add` them, run `glab stax rebase --continue`; or
-  `glab stax rebase --abort` to restore every branch.
+- Exit code 3 from `rebase` or `modify` means the operation is paused on a conflict: resolve the files, `git add`
+  them, then run `glab stax rebase --continue` (or `modify --continue`), or `--abort` to restore every branch.
+- Exit code 3 from `sync` or `merge` means nothing is paused: every branch was already restored. Run
+  `glab stax rebase` to reproduce the conflict and resolve it as above.
+- `push`, `submit` and `sync` refuse to push a layer whose remote branch has commits the local branch never had (for
+  example an applied review suggestion). Integrate them with `git pull --rebase` on that layer, then retry.
 - Never edit the block between `<!-- glab-stax:begin` and `<!-- glab-stax:end -->` in MR descriptions; glab-stax
   rewrites it.
 

@@ -101,6 +101,10 @@ Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never 
 - GitLab has no stack object, so the stack is recorded in a managed block at the end of each MR description.
 - Renaming a layer in `modify` cannot rename its MR's source branch on GitLab, so the next `submit` opens a new MR;
   close the old one.
+- `push`, `submit` and `sync` refuse to overwrite commits that someone else pushed to a layer (for example an applied
+  review suggestion) instead of force-pushing over them.
+- `merge <mr>` for a stack you have not checked out needs the stack block in the MR description; plain MRs are not
+  guessed into a stack.
 - `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the command stops at the first failure, leaving
   earlier MRs merged.
 
@@ -147,3 +151,5 @@ mise run check     # all of the above
 ## License
 
 MIT. See [LICENSE](LICENSE). Contains work derived from gh-stack, Copyright GitHub, Inc.
+
+<!-- DONE -->

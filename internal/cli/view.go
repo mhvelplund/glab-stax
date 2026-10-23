@@ -7,7 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 type viewBranch struct {
@@ -74,11 +76,11 @@ func (a *App) collectView(s *stack.Stack, cur string) (*viewData, error) {
 	d := &viewData{Trunk: s.Trunk, Remote: s.Remote, Current: cur}
 	for _, b := range s.Branches {
 		vb := viewBranch{Name: b.Name, Parent: s.Parent(b.Name), Base: b.Base, Merged: b.Merged, IsCurrent: b.Name == cur, MR: b.MR}
-		if c, err := g.LastCommit(b.Name); err == nil {
+		if c, err := g.LastCommit(git.Ref(b.Name)); err == nil {
 			vb.Head, vb.Subject, vb.time = c.SHA, c.Subject, relTime(a.Now(), c.Time)
 		}
 		if !b.Merged {
-			if n, err := g.CommitCount(vb.Parent, b.Name); err == nil {
+			if n, err := g.CommitCount(git.Ref(vb.Parent), git.Ref(b.Name)); err == nil {
 				vb.Commits = n
 			}
 		}
@@ -135,7 +137,7 @@ func (a *App) printLong(w io.Writer, d *viewData) error {
 		if b.Head != "" {
 			detail := fmt.Sprintf("%s %s · %s", b.Head[:7], b.Subject, b.time)
 			if !b.Merged {
-				detail += fmt.Sprintf(" · %s", plural(b.Commits, "commit"))
+				detail += fmt.Sprintf(" · %s", tui.Plural(b.Commits, "commit"))
 			}
 			fmt.Fprintf(w, "│   %s\n", detail)
 		}

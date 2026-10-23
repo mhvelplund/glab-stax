@@ -49,17 +49,6 @@ func (r *Repo) Run(args ...string) (string, error) {
 	return strings.TrimRight(stdout.String(), "\n"), nil
 }
 
-// Interactive runs git attached to the terminal, for commands that may open an editor.
-func (r *Repo) Interactive(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = r.Dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return &Error{Args: args, Err: err}
-	}
-	return nil
-}
-
 // At returns a Repo rooted at dir, e.g. another worktree.
 func (r *Repo) At(dir string) *Repo { return &Repo{Dir: dir} }
 
@@ -82,8 +71,9 @@ func (r *Repo) CommonDir() (string, error) {
 func (r *Repo) GitDir() (string, error) { return r.Run("rev-parse", "--absolute-git-dir") }
 
 // CurrentBranch returns the checked-out branch, or "" when HEAD is detached.
+// It strips refs/heads/ itself: `--short` yields "heads/x" when a tag x exists.
 func (r *Repo) CurrentBranch() (string, error) {
-	out, err := r.Run("symbolic-ref", "--quiet", "--short", "HEAD")
+	out, err := r.Run("symbolic-ref", "--quiet", "HEAD")
 	if err != nil {
 		var ge *Error
 		if errors.As(err, &ge) {
@@ -91,13 +81,17 @@ func (r *Repo) CurrentBranch() (string, error) {
 		}
 		return "", err
 	}
-	return out, nil
+	return strings.TrimPrefix(out, "refs/heads/"), nil
 }
 
 // RevParse resolves rev to a full SHA.
 func (r *Repo) RevParse(rev string) (string, error) {
 	return r.Run("rev-parse", "--verify", "--quiet", rev+"^{commit}")
 }
+
+// Ref returns the full ref of local branch name. Passing it instead of the
+// bare name keeps a tag of the same name from being picked.
+func Ref(name string) string { return "refs/heads/" + name }
 
 // BranchExists reports whether a local branch exists.
 func (r *Repo) BranchExists(name string) bool {
@@ -111,9 +105,10 @@ func (r *Repo) CreateBranch(name, start string) error {
 	return err
 }
 
-// Checkout switches to branch.
+// Checkout switches to branch. The "--" keeps git from taking a missing
+// branch's name as a path and restoring that path from the index instead.
 func (r *Repo) Checkout(branch string) error {
-	_, err := r.Run("checkout", "--quiet", branch)
+	_, err := r.Run("checkout", "--quiet", branch, "--")
 	return err
 }
 
@@ -211,7 +206,6 @@ func (r *Repo) EnableRerere() error {
 type Worktree struct {
 	Path   string
 	Branch string // short name; "" when detached
-	Bare   bool
 }
 
 // Worktrees lists all worktrees of the repository.
@@ -229,8 +223,6 @@ func (r *Repo) Worktrees() ([]Worktree, error) {
 			cur = &list[len(list)-1]
 		case cur != nil && strings.HasPrefix(line, "branch "):
 			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
-		case cur != nil && line == "bare":
-			cur.Bare = true
 		}
 	}
 	return list, nil
@@ -282,7 +274,7 @@ type Commit struct {
 
 // LastCommit returns the tip commit of rev.
 func (r *Repo) LastCommit(rev string) (Commit, error) {
-	out, err := r.Run("log", "-1", "--format=%H%x00%ct%x00%s", rev)
+	out, err := r.Run("log", "-1", "--format=%H%x00%ct%x00%s", rev, "--")
 	if err != nil {
 		return Commit{}, err
 	}
@@ -298,9 +290,13 @@ func (r *Repo) LastCommit(rev string) (Commit, error) {
 }
 
 // ValidBranchName reports whether name is an acceptable branch name.
+// `check-ref-format --branch` expands @{-N} and accepts "@", so those are rejected here.
 func (r *Repo) ValidBranchName(name string) bool {
+	if strings.HasPrefix(name, "-") || name == "@" || strings.Contains(name, "@{") {
+		return false
+	}
 	_, err := r.Run("check-ref-format", "--branch", name)
-	return err == nil && !strings.HasPrefix(name, "-")
+	return err == nil
 }
 
 // RunEnv executes git with extra environment variables.
@@ -317,14 +313,61 @@ func (r *Repo) RunEnv(env []string, args ...string) (string, error) {
 	return strings.TrimRight(stdout.String(), "\n"), nil
 }
 
+// Includes reports whether sha is, or once was, part of the local branch: an
+// ancestor of its tip or of one of its reflog entries. A remote commit that
+// is not included was never integrated locally.
+func (r *Repo) Includes(branch, sha string) bool {
+	ref := "refs/heads/" + branch
+	if r.IsAncestor(sha, ref) {
+		return true
+	}
+	out, err := r.Run("log", "-g", "--format=%H", ref, "--")
+	if err != nil || out == "" {
+		return false
+	}
+	entries := strings.Split(out, "\n")
+	for _, e := range entries {
+		if e == sha {
+			return true
+		}
+	}
+	for i, e := range entries {
+		if i == maxReflogChecks {
+			break
+		}
+		if r.IsAncestor(sha, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxReflogChecks bounds the ancestry checks Includes makes against reflog entries.
+const maxReflogChecks = 30
+
+// SamePath reports whether two paths name the same directory, resolving symlinks.
+func SamePath(a, b string) bool {
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return ra == rb
+}
+
 // ForkPoint returns `git merge-base --fork-point base branch`.
 func (r *Repo) ForkPoint(base, branch string) (string, error) {
 	return r.Run("merge-base", "--fork-point", base, branch)
 }
 
-// ConflictLines returns the 1-based line numbers of conflict markers in file.
+// ConflictLines returns the 1-based line numbers of conflict markers in file,
+// a path relative to the worktree root as ConflictedFiles returns it.
 func (r *Repo) ConflictLines(file string) []int {
-	data, err := os.ReadFile(filepath.Join(r.Dir, file))
+	top, err := r.TopLevel()
+	if err != nil {
+		top = r.Dir
+	}
+	data, err := os.ReadFile(filepath.Join(top, file))
 	if err != nil {
 		return nil
 	}

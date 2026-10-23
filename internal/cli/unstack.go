@@ -34,9 +34,19 @@ func (a *App) runUnstack(args []string, localOnly bool) error {
 		var s *stack.Stack
 		var iids []int
 		if len(args) == 1 {
-			iid, ok := parseMRRef(args[0])
+			ref, ok := parseMRRef(args[0])
 			if !ok {
 				return exitcode.New(exitcode.InvalidArgs, "expected an MR number, got %q", args[0])
+			}
+			iid := ref.iid
+			if ref.project != "" {
+				c, err := a.gitlab(a.defaultRemote())
+				if err != nil {
+					return err
+				}
+				if err := ref.check(c); err != nil {
+					return err
+				}
 			}
 			s, _ = findLocalMR(f, iid)
 			if s == nil && localOnly {

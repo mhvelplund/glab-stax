@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/glab"
@@ -20,7 +21,9 @@ func (a *App) gitlab(remote string) (*glab.Client, error) {
 	if err != nil {
 		return nil, exitcode.Wrap(exitcode.GitLabFailure, err)
 	}
-	p.Host = glab.SSHHostname(p.Host)
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		p.Host = glab.SSHHostname(p.Host) // ssh config aliases apply to ssh remotes only
+	}
 	return &glab.Client{Run: glab.ExecRunner, Project: p}, nil
 }
 

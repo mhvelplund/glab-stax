@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
@@ -43,7 +44,12 @@ func (st Store) Load() (*File, error) {
 // Save writes f atomically.
 func (st Store) Save(f *File) error {
 	f.Version = FormatVersion
-	data, err := json.MarshalIndent(f, "", "  ")
+	return st.writeJSON(st.path(), f)
+}
+
+// writeJSON writes v to path atomically, through a temporary file.
+func (st Store) writeJSON(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -59,7 +65,7 @@ func (st Store) Save(f *File) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), st.path())
+	return os.Rename(tmp.Name(), path)
 }
 
 // Lock serializes mutations across all worktrees of the clone. A lock left by
@@ -76,11 +82,21 @@ func (st Store) Lock() (unlock func(), err error) {
 		}
 		pid := readLockPID(p)
 		if pid > 0 && processAlive(pid) {
-			return nil, exitcode.New(exitcode.Locked, "stack is locked by another glab-stax process (pid %d)", pid)
+			return nil, exitcode.New(exitcode.Locked, "stack is locked by another glab-stax process (pid %d); if it is gone, remove %s", pid, p)
+		}
+		if pid <= 0 && lockIsFresh(p) {
+			// Its owner created it a moment ago and has not written its PID yet.
+			return nil, exitcode.New(exitcode.Locked, "stack is locked by another glab-stax process; if it is gone, remove %s", p)
 		}
 		os.Remove(p)
 	}
 	return nil, exitcode.New(exitcode.Locked, "could not acquire %s", p)
+}
+
+// lockIsFresh reports whether the lock file was written in the last few seconds.
+func lockIsFresh(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && time.Since(fi.ModTime()) < 10*time.Second
 }
 
 func writeLock(path string, pid int) error {

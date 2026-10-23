@@ -4,6 +4,7 @@ package glabtest
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ type GitLab struct {
 	// this many GETs before it shows as merged, like a running pipeline.
 	PendingPolls int
 	pending      map[int]int
+	// Protected lists protected branches; "main" is the default branch.
+	Protected map[string]bool
 }
 
 // New returns an empty fake.
@@ -41,9 +44,13 @@ func New() *GitLab {
 	return &GitLab{MRs: map[int]*glab.MR{}, nextIID: 1, Fail: map[string]error{}}
 }
 
+// projectPath is the fake project; calls are recorded with its encoded API
+// path replaced by ":project", e.g. "projects/:project/merge_requests".
+const projectPath = "group/repo"
+
 // Client returns a glab.Client backed by the fake.
 func (g *GitLab) Client() *glab.Client {
-	return &glab.Client{Run: g.Run, Project: glab.Project{Host: "gitlab.example", Path: "group/repo"}}
+	return &glab.Client{Run: g.Run, Project: glab.Project{Host: "gitlab.example", Path: projectPath}}
 }
 
 // Add inserts an MR directly and returns it.
@@ -94,6 +101,10 @@ func (g *GitLab) Run(args ...string) ([]byte, error) {
 	}
 	if c.Endpoint == "projects/:project" {
 		return json.Marshal(g.Project)
+	}
+	if name, ok := strings.CutPrefix(c.Endpoint, "projects/:project/repository/branches/"); ok {
+		name, _ = url.PathUnescape(name)
+		return json.Marshal(glab.BranchInfo{Protected: g.Protected[name] || name == "main", Default: name == "main"})
 	}
 	const base = "projects/:project/merge_requests"
 	rest, ok := strings.CutPrefix(c.Endpoint, base)
@@ -220,7 +231,7 @@ func parse(args []string) (Call, error) {
 	}
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--hostname", "--placeholder":
+		case "--hostname":
 			i++
 		case "-X":
 			i++
@@ -230,7 +241,11 @@ func parse(args []string) (Call, error) {
 			k, v, _ := strings.Cut(args[i], "=")
 			c.Fields[k] = v
 		default:
-			c.Endpoint = args[i]
+			ep, ok := strings.CutPrefix(args[i], "projects/"+url.PathEscape(projectPath))
+			if !ok {
+				return c, fmt.Errorf("fake: endpoint %s is not for project %s", args[i], projectPath)
+			}
+			c.Endpoint = "projects/:project" + ep
 		}
 	}
 	return c, nil

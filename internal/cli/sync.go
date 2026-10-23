@@ -7,6 +7,7 @@ import (
 
 	"github.com/mhvelplund/glab-stax/internal/engine"
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/glab"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
@@ -62,7 +63,7 @@ func (a *App) runSync(o syncOptions) error {
 		if err := g.Fetch(remote); err != nil {
 			return err
 		}
-		known, err := engine.SyncMRs(c, s)
+		known, err := engine.SyncMRs(c, g, s)
 		if err != nil {
 			return err
 		}
@@ -75,14 +76,19 @@ func (a *App) runSync(o syncOptions) error {
 			return err
 		}
 		r := &engine.Rebaser{Repo: g, Store: st, Log: a.infof}
-		trunkSHA, err := r.UpdateFromRemote(s, remote)
+		trunkSHA, err := r.FastForwardFromRemote(s, remote) // fetched above
 		if err != nil {
 			return err
 		}
-		if bottom := s.Bottom(); bottom != nil && !g.IsAncestor(trunkSHA, bottom.Name) {
-			if err := r.Start(s, engine.RebaseOptions{Anchor: cur, Remote: remote, AbortOnConflict: true}); err != nil {
+		if bottom := s.Bottom(); bottom != nil && !g.IsAncestor(trunkSHA, git.Ref(bottom.Name)) {
+			if err := r.Start(s, engine.RebaseOptions{Anchor: cur, Remote: remote, AbortOnConflict: true, TrunkSHA: trunkSHA}); err != nil {
 				return err
 			}
+		}
+		// Branches may have been rewritten: keep their new bases even if a later
+		// step (push, GitLab) fails.
+		if err := a.saveNow(f); err != nil {
+			return err
 		}
 
 		if active := branchNames(s.Active()); len(active) > 0 {
@@ -101,7 +107,14 @@ func (a *App) runSync(o syncOptions) error {
 				withMR++
 			}
 		}
-		if withMR >= 2 {
+		// A block that disagrees with the local stack (e.g. after choosing to
+		// keep the local stack) is rewritten even for a single open MR, or the
+		// next sync would find the stacks diverged again.
+		stale := false
+		if info := engine.RemoteStack(s, known); info != nil {
+			stale = engine.Compare(s, info) != engine.InSync
+		}
+		if withMR >= 2 || stale {
 			if err := engine.UpdateBlocks(c, s, known); err != nil {
 				return err
 			}
@@ -109,7 +122,7 @@ func (a *App) runSync(o syncOptions) error {
 		} else {
 			a.infof("Branches synced")
 		}
-		return a.pruneMerged(s, o.prune)
+		return a.pruneMerged(c, s, known, remote, o.prune)
 	})
 }
 
@@ -154,42 +167,34 @@ func (a *App) reconcile(f *stack.File, s *stack.Stack, c *glab.Client, known map
 	return nil
 }
 
-// appendRemoteLayer adds a layer that exists on GitLab on top of s.
+// appendRemoteLayer adds a layer that exists on GitLab on top of s, creating
+// or fast-forwarding its local branch like checkout does. A merged layer whose
+// branch is gone is recorded without one.
 func (a *App) appendRemoteLayer(f *stack.File, s *stack.Stack, c *glab.Client, known map[string]*glab.MR, item glab.StackItem, remote string) error {
 	if other := f.Find(item.Branch); other != nil && other != s {
 		return exitcode.New(exitcode.Ambiguous, "%s is already part of another local stack", item.Branch)
 	}
-	b, err := a.layerFromRemote(s, item, remote)
-	if err != nil {
-		return err
-	}
+	b := &stack.Branch{Name: item.Branch, MR: &stack.MR{IID: item.IID}}
 	if mr, err := c.GetMR(item.IID); err == nil {
 		known[item.Branch] = mr
-		b.MR = &stack.MR{IID: mr.IID, URL: mr.WebURL}
+		b.MR.URL = mr.WebURL
 		b.Merged = mr.Merged()
 	}
+	if err := a.syncLocalBranch(remote, item.Branch, b.Merged); err != nil {
+		return err
+	}
+	below := git.Ref(s.Trunk)
+	if n := len(s.Branches); n > 0 {
+		last := s.Branches[n-1]
+		mr := known[last.Name]
+		if mr == nil && last.MR != nil && !a.repo().BranchExists(last.Name) {
+			mr, _ = c.GetMR(last.MR.IID) // a merged layer whose branch is gone
+		}
+		below = layerTip(a.repo(), last.Name, mr)
+	}
+	b.Base = a.forkBase(below, item.Branch)
 	s.Branches = append(s.Branches, b)
 	return nil
-}
-
-// layerFromRemote returns a branch record for item, creating the local branch
-// from the remote one if needed. Its base is where it forks from the current top.
-func (a *App) layerFromRemote(s *stack.Stack, item glab.StackItem, remote string) (*stack.Branch, error) {
-	g := a.repo()
-	if !g.BranchExists(item.Branch) {
-		if _, err := g.Run("branch", "--track", item.Branch, remote+"/"+item.Branch); err != nil {
-			return nil, fmt.Errorf("cannot create %s from %s: %w", item.Branch, remote, err)
-		}
-	}
-	below := s.Trunk
-	if len(s.Branches) > 0 {
-		below = s.Branches[len(s.Branches)-1].Name
-	}
-	base, err := g.MergeBase(below, item.Branch)
-	if err != nil {
-		return nil, err
-	}
-	return &stack.Branch{Name: item.Branch, Base: base, MR: &stack.MR{IID: item.IID}}, nil
 }
 
 // adoptRemote replaces the local layer list with GitLab's.
@@ -218,24 +223,16 @@ func (a *App) adoptRemote(f *stack.File, s *stack.Stack, c *glab.Client, known m
 	return nil
 }
 
-// detachRemoteOnly removes the stack block from MRs GitLab lists but the local stack does not.
+// detachRemoteOnly removes the stack block from open MRs GitLab lists but the local stack does not.
 func (a *App) detachRemoteOnly(s *stack.Stack, c *glab.Client, info *glab.StackInfo) error {
+	var iids []int
 	for _, item := range info.MRs {
 		if b := s.Get(item.Branch); b != nil && b.MR != nil && b.MR.IID == item.IID {
 			continue
 		}
-		mr, err := c.GetMR(item.IID)
-		if err != nil {
-			return err
-		}
-		if desc := glab.StripBlock(mr.Description); desc != mr.Description {
-			if _, err := c.UpdateMR(mr.IID, map[string]any{"description": desc}); err != nil {
-				return err
-			}
-			a.infof("Removed !%d from the stack on GitLab", mr.IID)
-		}
+		iids = append(iids, item.IID)
 	}
-	return nil
+	return a.stripBlocks(c, iids)
 }
 
 // retargetAndReport points each open MR at the layer below it and prints MR state.
@@ -272,22 +269,28 @@ func (a *App) retargetAndReport(c *glab.Client, s *stack.Stack, known map[string
 	return nil
 }
 
-// pruneMerged deletes local branches of merged layers, asking first unless force.
-func (a *App) pruneMerged(s *stack.Stack, force bool) error {
+// pruneMerged deletes local branches of merged layers, asking first unless
+// force. A branch holding commits that GitLab never merged is kept.
+func (a *App) pruneMerged(c *glab.Client, s *stack.Stack, known map[string]*glab.MR, remote string, force bool) error {
+	if !force && !a.Interactive {
+		return nil
+	}
 	g := a.repo()
 	var doomed []string
 	for _, b := range s.Branches {
-		if b.Merged && g.BranchExists(b.Name) {
-			doomed = append(doomed, b.Name)
+		if !b.Merged || !g.BranchExists(b.Name) {
+			continue
 		}
+		if !a.fullyMerged(c, b, known, remote) {
+			a.infof("Kept %s: it has commits that were not merged", b.Name)
+			continue
+		}
+		doomed = append(doomed, b.Name)
 	}
 	if len(doomed) == 0 {
 		return nil
 	}
 	if !force {
-		if !a.Interactive {
-			return nil
-		}
 		ok, err := a.confirm(fmt.Sprintf("Delete %d local branch(es) of merged MRs (%v)?", len(doomed), doomed), false)
 		if err != nil || !ok {
 			return err
@@ -307,9 +310,10 @@ func (a *App) pruneMerged(s *stack.Stack, force bool) error {
 			continue
 		}
 		if name == cur {
-			dest := s.Trunk
-			if bottom := s.Bottom(); bottom != nil {
-				dest = bottom.Name
+			dest := a.freeBranch(s)
+			if dest == "" {
+				a.infof("Kept %s: it is checked out here, and the stack's other branches are checked out elsewhere", name)
+				continue
 			}
 			if err := g.Checkout(dest); err != nil {
 				return err
@@ -323,4 +327,34 @@ func (a *App) pruneMerged(s *stack.Stack, force bool) error {
 		a.infof("Deleted %s", name)
 	}
 	return nil
+}
+
+// fullyMerged reports whether b's local tip is contained in what reached
+// GitLab: its remote branch, or the last commit of its merged MR.
+func (a *App) fullyMerged(c *glab.Client, b *stack.Branch, known map[string]*glab.MR, remote string) bool {
+	g := a.repo()
+	tip := git.Ref(b.Name)
+	if sha, err := g.RevParse("refs/remotes/" + remote + "/" + b.Name); err == nil && g.IsAncestor(tip, sha) {
+		return true
+	}
+	mr := known[b.Name]
+	if mr == nil && b.MR != nil {
+		mr, _ = c.GetMR(b.MR.IID)
+	}
+	return mr != nil && mr.SHA != "" && g.IsAncestor(tip, mr.SHA)
+}
+
+// freeBranch returns the bottom unmerged layer, else the trunk, unless it is
+// checked out in another worktree; "" if neither is free.
+func (a *App) freeBranch(s *stack.Stack) string {
+	var candidates []string
+	if bottom := s.Bottom(); bottom != nil {
+		candidates = append(candidates, bottom.Name)
+	}
+	for _, name := range append(candidates, s.Trunk) {
+		if owner, err := a.foreignOwner(name); err == nil && owner == "" {
+			return name
+		}
+	}
+	return ""
 }

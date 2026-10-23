@@ -13,13 +13,10 @@ const (
 	ModifyJournal = "glab-stax-modify-state"
 )
 
-// SaveJournal writes v as the named journal.
+// SaveJournal writes v as the named journal, atomically: a journal cut short
+// would leave the paused operation impossible to continue or abort.
 func (st Store) SaveJournal(name string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(st.Dir, name), append(data, '\n'), 0o644)
+	return st.writeJSON(filepath.Join(st.Dir, name), v)
 }
 
 // LoadJournal reads the named journal into v. It reports false if there is none.

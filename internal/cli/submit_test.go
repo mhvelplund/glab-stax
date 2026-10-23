@@ -184,7 +184,7 @@ func TestSubmitPartialFailureKeepsProgress(t *testing.T) {
 	h := threeLayers(t)
 	creates := 0
 	h.runner = func(args ...string) ([]byte, error) {
-		if strings.Contains(strings.Join(args, " "), "-X POST projects/:project/merge_requests") {
+		if strings.Contains(strings.Join(args, " "), "-X POST projects/group%2Frepo/merge_requests") {
 			if creates++; creates == 2 {
 				return nil, errors.New("500 Internal Server Error")
 			}
@@ -198,5 +198,49 @@ func TestSubmitPartialFailureKeepsProgress(t *testing.T) {
 	s := h.file().Stacks[0]
 	if s.Branches[0].MR == nil || s.Branches[1].MR != nil || s.Branches[2].MR == nil {
 		t.Fatalf("progress not saved: %+v %+v %+v", s.Branches[0].MR, s.Branches[1].MR, s.Branches[2].MR)
+	}
+}
+
+func TestSubmitDoesNotClobberRemoteCommits(t *testing.T) {
+	h := threeLayers(t)
+	h.must("submit", "--auto")
+	// A reviewer applies a suggestion on GitLab: a commit lands on b remotely.
+	theirs := h.repo.PushFromElsewhere("b", "theirs.txt", "x\n", "Apply suggestion")
+	// Locally, a lower layer is amended and the stack restacked without fetching.
+	h.repo.Git("checkout", "--quiet", "a")
+	h.repo.Git("commit", "--quiet", "--amend", "-m", "a1 amended")
+	h.must("rebase", "--no-trunk")
+
+	r := h.run("submit", "--auto") // fetches before pushing
+	if r.e == nil || !strings.Contains(r.e.Error(), "b on origin") {
+		t.Fatalf("submit did not refuse to overwrite b: %v", r.e)
+	}
+	if !strings.HasPrefix(h.remoteSHA("b"), theirs) || !strings.HasPrefix(h.remoteSHA("a"), h.sha("origin/a")) {
+		t.Fatal("a branch was pushed although the push was refused")
+	}
+}
+
+func TestSubmitIgnoresOldMergedMRWithSameBranchName(t *testing.T) {
+	h := newHarness(t)
+	h.gl.Add(glab.MR{IID: 1, Title: "old", SourceBranch: "fix", TargetBranch: "main", State: "merged", SHA: strings.Repeat("1", 40)})
+	h.must("init", "fix")
+	h.repo.Commit("f.txt", "f\n", "new fix")
+	r := h.must("submit", "--auto")
+	s := h.file().Stacks[0]
+	if len(s.Branches) != 1 || s.Branches[0].Merged || s.Branches[0].MR == nil || s.Branches[0].MR.IID != 2 {
+		t.Fatalf("new layer was matched to the old merged MR: %+v\n%s", s.Branches, r.err)
+	}
+}
+
+func TestSubmitIgnoresForkMRWithSameBranchName(t *testing.T) {
+	h := threeLayers(t)
+	fork := h.gl.Add(glab.MR{IID: 1, Title: "contributor", SourceBranch: "b", TargetBranch: "main", Description: "theirs"})
+	fork.SourceProjectID, fork.TargetProjectID = 77, 5
+	h.must("submit", "--auto")
+	if fork.TargetBranch != "main" || fork.Description != "theirs" {
+		t.Fatalf("the fork's MR was taken over: target %s, description %q", fork.TargetBranch, fork.Description)
+	}
+	if b := h.file().Stacks[0].Get("b"); b.MR == nil || b.MR.IID == 1 {
+		t.Fatalf("b's MR = %+v", b.MR)
 	}
 }

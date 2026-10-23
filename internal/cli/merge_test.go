@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -184,4 +185,77 @@ func TestMergeArgErrors(t *testing.T) {
 
 func (h *harness) runGit(args ...string) (string, error) {
 	return (&App{Dir: h.repo.Dir}).repo().Run(args...)
+}
+
+// GitLab reports "locked" while it performs a merge; that is not a failure.
+func TestMergeWaitsThroughLockedState(t *testing.T) {
+	h := mergeable(t)
+	h.gl.PendingPolls = 1
+	merged, locked := false, false
+	h.runner = func(args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		out, err := h.gl.Run(args...)
+		if strings.Contains(joined, "-X PUT projects/group%2Frepo/merge_requests/1/merge ") {
+			merged = true
+		} else if merged && !locked && err == nil && strings.HasSuffix(joined, "-X GET projects/group%2Frepo/merge_requests/1") {
+			locked = true
+			var m map[string]any
+			_ = json.Unmarshal(out, &m)
+			m["state"] = "locked"
+			return json.Marshal(m)
+		}
+		return out, err
+	}
+	if r := h.run("merge", "1", "--yes", "--squash"); r.e != nil {
+		t.Fatalf("merge failed on a transient locked state: %v\n%s", r.e, r.err)
+	}
+	if !locked || !h.gl.MRs[1].Merged() {
+		t.Fatal("the locked state was not exercised")
+	}
+}
+
+// !1 was merged earlier (here on GitLab) while !2 still targets a: !2 must be
+// restacked and retargeted before it is merged, not merged into a.
+func TestMergeRetargetsFirstLayerStillOnMergedBranch(t *testing.T) {
+	h := mergeable(t)
+	if err := h.gl.OnMerge(h.gl.MRs[1], true); err != nil {
+		t.Fatal(err)
+	}
+	h.gl.MRs[1].State = "merged"
+	onMerge := h.gl.OnMerge
+	targets := map[int]string{}
+	h.gl.OnMerge = func(mr *glab.MR, squash bool) error {
+		targets[mr.IID] = mr.TargetBranch
+		return onMerge(mr, squash)
+	}
+	h.must("merge", "--yes", "--squash")
+	if targets[2] != "main" || targets[3] != "main" {
+		t.Fatalf("targets at merge time: %v", targets)
+	}
+}
+
+// An MR that is in no stack block is not merged together with whatever its
+// target branches lead to.
+func TestMergeRefusesMRWithoutStackBlock(t *testing.T) {
+	h := newHarness(t)
+	h.gl.Add(glab.MR{IID: 1, Title: "release", SourceBranch: "main", TargetBranch: "production"})
+	h.gl.Add(glab.MR{IID: 2, Title: "feature", SourceBranch: "feature", TargetBranch: "main"})
+	r := h.run("merge", "2", "--yes", "--squash")
+	if exitcode.Of(r.e) != exitcode.NotInStack {
+		t.Fatalf("exit %d: %v", exitcode.Of(r.e), r.e)
+	}
+	for _, c := range h.gl.Calls {
+		if strings.HasSuffix(c.Endpoint, "/merge") {
+			t.Fatal("tried to merge")
+		}
+	}
+}
+
+// Failing to reach GitLab is a GitLab failure, not "not in a stack".
+func TestMergeLookupFailureExitCode(t *testing.T) {
+	h := mergeable(t)
+	h.runner = func(args ...string) ([]byte, error) { return nil, errors.New("401 Unauthorized") }
+	if got := exitcode.Of(h.run("merge", "99", "--yes").e); got != exitcode.GitLabFailure {
+		t.Fatalf("exit %d", got)
+	}
 }

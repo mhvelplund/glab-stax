@@ -3,7 +3,6 @@ package engine
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
@@ -21,6 +20,9 @@ type RebaseOptions struct {
 	PreserveDates bool   // --committer-date-is-author-date
 	// AbortOnConflict restores every branch instead of pausing on a conflict.
 	AbortOnConflict bool
+	// TrunkSHA, when set, is the commit to rebase the bottom layer onto: the
+	// caller has already fetched and fast-forwarded (FastForwardFromRemote).
+	TrunkSHA string
 }
 
 // rebaseState is the journal for a paused cascade rebase.
@@ -76,11 +78,14 @@ func (r *Rebaser) Start(s *stack.Stack, o RebaseOptions) error {
 		RestoreRefs: r.tips(s), Order: order, PreserveDates: o.PreserveDates,
 		AbortOnConflict: o.AbortOnConflict,
 	}
-	if o.NoTrunk {
-		if st.TrunkSHA, err = r.Repo.RevParse(s.Trunk); err != nil {
+	switch {
+	case o.TrunkSHA != "":
+		st.TrunkSHA = o.TrunkSHA
+	case o.NoTrunk:
+		if st.TrunkSHA, err = r.Repo.RevParse(git.Ref(s.Trunk)); err != nil {
 			return err
 		}
-	} else {
+	default:
 		remote := o.Remote
 		if remote == "" {
 			remote = s.Remote
@@ -103,22 +108,28 @@ func (r *Rebaser) Continue(f *stack.File) error {
 	if err != nil {
 		return err
 	}
+	branch := st.Order[st.Next]
 	wt := r.Repo.At(st.ConflictDir)
 	if in, _ := wt.RebaseInProgress(); in {
 		if files, _ := wt.ConflictedFiles(); len(files) > 0 {
-			r.reportConflict(wt, st.Order[st.Next], files)
+			r.reportConflict(wt, branch, files)
 			return exitcode.New(exitcode.RebaseConflict, "resolve the conflicts and `git add` the files first")
 		}
 		if _, err := wt.RunEnv([]string{"GIT_EDITOR=true"}, "rebase", "--continue"); err != nil {
 			return r.handleFailure(st, wt, err)
 		}
+	} else if newBase, _ := r.newBase(s, st, branch); !r.Repo.IsAncestor(newBase, git.Ref(branch)) {
+		// No rebase is paused, yet the layer is not on its new base: its rebase
+		// never started or was aborted with git. Run it again.
+		r.Log("%s was not rebased yet; rebasing it again", branch)
+		return r.run(s, st, st.Next)
 	}
-	r.Log("Rebased %s", st.Order[st.Next])
+	r.Log("Rebased %s", branch)
 	return r.run(s, st, st.Next+1)
 }
 
 // Abort restores every layer to where it was before the rebase started.
-func (r *Rebaser) Abort(f *stack.File) error {
+func (r *Rebaser) Abort() error {
 	var st rebaseState
 	ok, err := r.Store.LoadJournal(stack.RebaseJournal, &st)
 	if err != nil {
@@ -140,9 +151,7 @@ func (r *Rebaser) Abort(f *stack.File) error {
 			return err
 		}
 	}
-	if err := r.restoreCheckout(&st); err != nil {
-		return err
-	}
+	r.restoreCheckout(&st)
 	if !st.AbortOnConflict {
 		r.Log("Rebase aborted; all branches restored")
 	}
@@ -178,8 +187,13 @@ func selectRange(s *stack.Stack, o RebaseOptions) []string {
 	if o.Upstack {
 		start = anchor
 	}
-	if o.NoTrunk && start < 1 {
-		start = 1
+	if o.NoTrunk {
+		// The bottom unmerged layer stays where it is.
+		bottom := 0
+		for bottom < len(s.Branches) && s.Branches[bottom].Merged {
+			bottom++
+		}
+		start = max(start, bottom+1)
 	}
 	var order []string
 	for i := start; i < end; i++ {
@@ -195,7 +209,11 @@ func (r *Rebaser) Preflight(order []string) error { return r.preflight(order) }
 
 // preflight checks that every worktree we will touch is clean and idle.
 func (r *Rebaser) preflight(order []string) error {
-	dirs := map[string]bool{r.Repo.Dir: true}
+	top, err := r.Repo.TopLevel()
+	if err != nil {
+		return err
+	}
+	dirs := map[string]bool{top: true}
 	for _, b := range order {
 		owner, err := r.Repo.WorktreeFor(b)
 		if err != nil {
@@ -225,7 +243,7 @@ func (r *Rebaser) preflight(order []string) error {
 func (r *Rebaser) tips(s *stack.Stack) map[string]string {
 	refs := map[string]string{}
 	for _, b := range s.Branches {
-		if sha, err := r.Repo.RevParse("refs/heads/" + b.Name); err == nil {
+		if sha, err := r.Repo.RevParse(git.Ref(b.Name)); err == nil {
 			refs[b.Name] = sha
 		}
 	}
@@ -238,10 +256,15 @@ func (r *Rebaser) UpdateFromRemote(s *stack.Stack, remote string) (string, error
 	if err := r.Repo.Fetch(remote); err != nil {
 		return "", exitcode.Wrap(exitcode.Generic, fmt.Errorf("fetch %s: %w", remote, err))
 	}
+	return r.FastForwardFromRemote(s, remote)
+}
+
+// FastForwardFromRemote is UpdateFromRemote for a caller that has just fetched.
+func (r *Rebaser) FastForwardFromRemote(s *stack.Stack, remote string) (string, error) {
 	trunkSHA, err := r.Repo.RevParse("refs/remotes/" + remote + "/" + s.Trunk)
 	if err != nil {
 		// The trunk only exists locally.
-		return r.Repo.RevParse(s.Trunk)
+		return r.Repo.RevParse(git.Ref(s.Trunk))
 	}
 	r.Log("Fetched latest %s from %s", s.Trunk, remote)
 	if err := r.fastForward(s.Trunk, trunkSHA); err != nil {
@@ -250,6 +273,12 @@ func (r *Rebaser) UpdateFromRemote(s *stack.Stack, remote string) (string, error
 	for _, b := range s.Active() {
 		remoteSHA, err := r.Repo.RevParse("refs/remotes/" + remote + "/" + b.Name)
 		if err != nil {
+			continue
+		}
+		// Only commits from elsewhere are taken in: a remote tip the branch had
+		// before was left behind on purpose (e.g. a pushed commit dropped with
+		// `git reset`).
+		if r.Repo.Includes(b.Name, remoteSHA) {
 			continue
 		}
 		if err := r.fastForward(b.Name, remoteSHA); err != nil {
@@ -261,7 +290,7 @@ func (r *Rebaser) UpdateFromRemote(s *stack.Stack, remote string) (string, error
 
 // fastForward moves branch to target if that is a fast-forward; otherwise it does nothing.
 func (r *Rebaser) fastForward(branch, target string) error {
-	local, err := r.Repo.RevParse("refs/heads/" + branch)
+	local, err := r.Repo.RevParse(git.Ref(branch))
 	if err != nil || local == target || !r.Repo.IsAncestor(local, target) {
 		return nil
 	}
@@ -272,7 +301,7 @@ func (r *Rebaser) fastForward(branch, target string) error {
 	if owner != "" {
 		_, err = r.Repo.At(owner).Run("merge", "--ff-only", "--quiet", target)
 	} else {
-		_, err = r.Repo.Run("update-ref", "refs/heads/"+branch, target, local)
+		_, err = r.Repo.Run("update-ref", git.Ref(branch), target, local)
 	}
 	if err == nil {
 		r.Log("Fast-forwarded %s", branch)
@@ -280,24 +309,27 @@ func (r *Rebaser) fastForward(branch, target string) error {
 	return err
 }
 
-// run rebases st.Order[from:], then finishes.
+// run rebases st.Order[from:], then finishes. A layer checked out in some
+// worktree is rebased there; any other layer is checked out and rebased in
+// the worktree the rebase started from, whose checkout finish restores.
 func (r *Rebaser) run(s *stack.Stack, st *rebaseState, from int) error {
+	home := r.Repo.At(st.OriginalDir)
 	for i := from; i < len(st.Order); i++ {
 		branch := st.Order[i]
-		newBase, args, err := r.plan(s, st, branch)
+		display, args, err := r.plan(s, st, branch)
 		if err != nil {
-			_ = r.Abort(nil)
+			_ = r.Abort()
 			return err
 		}
 		owner, err := r.Repo.WorktreeFor(branch)
 		if err != nil {
 			return err
 		}
-		wt := r.Repo
+		wt := home
 		if owner != "" {
 			wt = r.Repo.At(owner)
 		} else {
-			args = append(args, branch) // checks the branch out here
+			args = append(args, branch) // checks the branch out first
 		}
 		st.Next, st.ConflictDir = i, wt.Dir
 		if err := r.Store.SaveJournal(stack.RebaseJournal, st); err != nil {
@@ -306,9 +338,18 @@ func (r *Rebaser) run(s *stack.Stack, st *rebaseState, from int) error {
 		if _, err := wt.Run(args...); err != nil {
 			return r.handleFailure(st, wt, err)
 		}
-		r.Log("Rebased %s onto %s", branch, short(newBase))
+		r.Log("Rebased %s onto %s", branch, display)
 	}
 	return r.finish(s, st)
+}
+
+// newBase returns what branch goes onto, as a revision and as a name to show:
+// the nearest unmerged layer below, else the trunk commit.
+func (r *Rebaser) newBase(s *stack.Stack, st *rebaseState, branch string) (rev, display string) {
+	if parent := s.Parent(branch); parent != s.Trunk {
+		return git.Ref(parent), parent
+	}
+	return st.TrunkSHA, short(st.TrunkSHA)
 }
 
 // plan returns the rebase command for branch: the bottom layer goes onto the
@@ -316,51 +357,76 @@ func (r *Rebaser) run(s *stack.Stack, st *rebaseState, from int) error {
 // previous tip of the branch directly below.
 func (r *Rebaser) plan(s *stack.Stack, st *rebaseState, branch string) (string, []string, error) {
 	idx := s.Index(branch)
-	newBase := st.TrunkSHA
-	for j := idx - 1; j >= 0; j-- {
-		if !s.Branches[j].Merged {
-			newBase = s.Branches[j].Name
-			break
-		}
-	}
+	newBase, display := r.newBase(s, st, branch)
+	ref := git.Ref(branch)
 	args := []string{"rebase", "--quiet"}
 	if st.PreserveDates {
 		args = append(args, "--committer-date-is-author-date")
 	}
 	if idx == 0 {
-		return newBase, append(args, newBase), nil
+		// A plain rebase onto the trunk, which also drops commits the trunk has
+		// already. But if the recorded base holds commits the trunk lacks (the
+		// layer sat on squash-merged layers that were pruned from the stack),
+		// cut there so those commits are not replayed.
+		if b := s.Branches[0].Base; b != "" && r.Repo.IsAncestor(b, ref) && !r.Repo.IsAncestor(b, newBase) {
+			return display, append(args, "--onto", newBase, b), nil
+		}
+		return display, append(args, newBase), nil
 	}
 	below := s.Branches[idx-1].Name
 	candidates := []string{st.OriginalRefs[below], s.Branches[idx].Base}
-	if fp, err := r.Repo.ForkPoint(newBase, branch); err == nil {
+	forkRef := newBase
+	if newBase == st.TrunkSHA {
+		forkRef = git.Ref(s.Trunk) // --fork-point needs a ref with a reflog, not a SHA
+	}
+	if fp, err := r.Repo.ForkPoint(forkRef, ref); err == nil {
 		candidates = append(candidates, fp)
 	}
+	// Cut at the latest candidate the branch contains: the parent's tip as
+	// last restacked if the parent dropped commits since (they must not come
+	// back here), its current tip if the branch was restacked onto it by hand.
+	cut := ""
 	for _, c := range candidates {
-		if c != "" && r.Repo.IsAncestor(c, branch) {
-			return newBase, append(args, "--onto", newBase, c), nil
+		if c != "" && r.Repo.IsAncestor(c, ref) && (cut == "" || r.Repo.IsAncestor(cut, c)) {
+			cut = c
 		}
 	}
-	return "", nil, fmt.Errorf("could not determine where %s starts after %s changed; rebase it manually", branch, below)
+	if cut == "" {
+		return "", nil, fmt.Errorf("could not determine where %s starts after %s changed; rebase it manually", branch, below)
+	}
+	return display, append(args, "--onto", newBase, cut), nil
 }
 
 func (r *Rebaser) handleFailure(st *rebaseState, wt *git.Repo, err error) error {
-	if in, _ := wt.RebaseInProgress(); !in {
-		return fmt.Errorf("rebase of %s failed: %w", st.Order[st.Next], err)
-	}
 	branch := st.Order[st.Next]
+	in, _ := wt.RebaseInProgress()
 	if st.AbortOnConflict {
-		if aerr := r.Abort(nil); aerr != nil {
-			return fmt.Errorf("conflict while rebasing %s, and restoring branches failed: %w", branch, aerr)
+		if aerr := r.Abort(); aerr != nil {
+			return fmt.Errorf("rebasing %s failed (%v), and restoring branches failed: %w", branch, err, aerr)
+		}
+		if !in {
+			return fmt.Errorf("rebase of %s failed, so all branches were restored: %w", branch, err)
 		}
 		return exitcode.New(exitcode.RebaseConflict, "conflict while rebasing %s; all branches were restored. Run `glab stax rebase` to resolve it", branch)
 	}
+	if !in {
+		return fmt.Errorf("rebase of %s failed: %w; fix the problem, then run `glab stax rebase --continue` (or `--abort`)", branch, err)
+	}
 	files, _ := wt.ConflictedFiles()
 	r.reportConflict(wt, branch, files)
+	if len(files) == 0 {
+		// git stopped for another reason, e.g. untracked files in the way.
+		return exitcode.Wrap(exitcode.RebaseConflict, fmt.Errorf("rebasing %s stopped: %w", branch, err))
+	}
 	return exitcode.New(exitcode.RebaseConflict, "conflict while rebasing %s", branch)
 }
 
 func (r *Rebaser) reportConflict(wt *git.Repo, branch string, files []string) {
-	r.Log("Conflict while rebasing %s in %s:", branch, wt.Dir)
+	if len(files) == 0 {
+		r.Log("Rebasing %s stopped in %s without conflicts; see the error below.", branch, wt.Dir)
+	} else {
+		r.Log("Conflict while rebasing %s in %s:", branch, wt.Dir)
+	}
 	for _, f := range files {
 		lines := wt.ConflictLines(f)
 		if len(lines) == 0 {
@@ -383,7 +449,7 @@ func (r *Rebaser) finish(s *stack.Stack, st *rebaseState) error {
 		parent := s.Parent(name)
 		base := st.TrunkSHA
 		if parent != s.Trunk {
-			sha, err := r.Repo.RevParse("refs/heads/" + parent)
+			sha, err := r.Repo.RevParse(git.Ref(parent))
 			if err != nil {
 				return err
 			}
@@ -391,29 +457,34 @@ func (r *Rebaser) finish(s *stack.Stack, st *rebaseState) error {
 		}
 		s.Get(name).Base = base
 	}
-	if err := r.restoreCheckout(st); err != nil {
-		return err
-	}
+	r.restoreCheckout(st)
 	r.Log("Rebased %d branch(es). Run `glab stax push` to publish them.", len(st.Order))
 	return r.Store.ClearJournal(stack.RebaseJournal)
 }
 
-func (r *Rebaser) restoreCheckout(st *rebaseState) error {
+// restoreCheckout checks the original branch out again in the original
+// worktree. Failing to is only a warning: the branches themselves are done.
+func (r *Rebaser) restoreCheckout(st *rebaseState) {
 	if st.OriginalBranch == "" {
-		return nil
+		return
 	}
 	wt := r.Repo.At(st.OriginalDir)
 	cur, err := wt.CurrentBranch()
-	if err != nil || cur == st.OriginalBranch {
-		return err
+	if err == nil && cur == st.OriginalBranch {
+		return
 	}
-	return wt.Checkout(st.OriginalBranch)
+	if err == nil {
+		err = wt.Checkout(st.OriginalBranch)
+	}
+	if err != nil {
+		r.Log("Warning: could not check out %s again in %s: %v", st.OriginalBranch, st.OriginalDir, err)
+	}
 }
 
-// resetBranch moves branch to sha, in its worktree if it is checked out
-// (worktrees were verified clean before starting).
+// resetBranch moves branch to sha. A branch checked out in a worktree is reset
+// there with --keep, which refuses rather than discard uncommitted changes.
 func (r *Rebaser) resetBranch(branch, sha string) error {
-	cur, err := r.Repo.RevParse("refs/heads/" + branch)
+	cur, err := r.Repo.RevParse(git.Ref(branch))
 	if err == nil && cur == sha {
 		return nil
 	}
@@ -422,8 +493,10 @@ func (r *Rebaser) resetBranch(branch, sha string) error {
 		return err
 	}
 	if owner != "" {
-		_, err = r.Repo.At(owner).Run("reset", "--hard", "--quiet", sha)
-		return err
+		if _, err := r.Repo.At(owner).Run("reset", "--keep", "--quiet", sha); err != nil {
+			return fmt.Errorf("restoring %s in %s: %w (commit or stash the changes there, then run `glab stax rebase --abort` again)", branch, owner, err)
+		}
+		return nil
 	}
 	return r.Repo.SetBranchSHA(branch, sha)
 }
@@ -433,9 +506,4 @@ func short(ref string) string {
 		return ref[:7]
 	}
 	return ref
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

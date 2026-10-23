@@ -57,7 +57,7 @@ func (a *App) runRebase(fl rebaseFlags) error {
 		case fl.cont:
 			return r.Continue(f)
 		case fl.abort:
-			return r.Abort(f)
+			return r.Abort()
 		}
 		if err := checkPaused(st); err != nil {
 			return err
@@ -79,7 +79,7 @@ func (a *App) runRebase(fl rebaseFlags) error {
 		}
 		// Best effort: learn which layers were merged so they are skipped.
 		if c, err := a.gitlab(pickRemote(fl.opts.Remote, s.Remote)); err == nil {
-			_, _ = engine.SyncMRs(c, s)
+			_, _ = engine.SyncMRs(c, a.repo(), s)
 		}
 		if err := a.repo().EnableRerere(); err != nil {
 			return err

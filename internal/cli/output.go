@@ -1,12 +1,13 @@
 package cli
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 // withPager sends what fn writes through $GIT_PAGER, $PAGER or `less -R`
@@ -58,23 +59,16 @@ func relTime(now, t time.Time) string {
 	case d < time.Minute:
 		return "just now"
 	case d < time.Hour:
-		return plural(int(d.Minutes()), "minute") + " ago"
+		return tui.Plural(int(d.Minutes()), "minute") + " ago"
 	case d < 24*time.Hour:
-		return plural(int(d.Hours()), "hour") + " ago"
+		return tui.Plural(int(d.Hours()), "hour") + " ago"
 	case d < 30*24*time.Hour:
-		return plural(int(d.Hours()/24), "day") + " ago"
+		return tui.Plural(int(d.Hours()/24), "day") + " ago"
 	case d < 365*24*time.Hour:
-		return plural(int(d.Hours()/24/30), "month") + " ago"
+		return tui.Plural(int(d.Hours()/24/30), "month") + " ago"
 	default:
-		return plural(int(d.Hours()/24/365), "year") + " ago"
+		return tui.Plural(int(d.Hours()/24/365), "year") + " ago"
 	}
-}
-
-func plural(n int, unit string) string {
-	if n == 1 {
-		return "1 " + unit
-	}
-	return fmt.Sprintf("%d %ss", n, unit)
 }
 
 func firstNonEmpty(vals ...string) string {

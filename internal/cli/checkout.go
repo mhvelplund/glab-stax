@@ -58,15 +58,23 @@ func (a *App) resolveCheckout(f *stack.File, arg string) (string, error) {
 	if arg == "" {
 		return a.pickStack(f)
 	}
-	if iid, ok := parseMRRef(arg); ok {
-		if _, b := findLocalMR(f, iid); b != nil {
-			return b.Name, nil
+	if ref, ok := parseMRRef(arg); ok {
+		if ref.project == "" {
+			if _, b := findLocalMR(f, ref.iid); b != nil {
+				return b.Name, nil
+			}
 		}
 		c, err := a.gitlab(a.defaultRemote())
 		if err != nil {
 			return "", err
 		}
-		mr, err := c.GetMR(iid)
+		if err := ref.check(c); err != nil {
+			return "", err
+		}
+		if _, b := findLocalMR(f, ref.iid); b != nil {
+			return b.Name, nil
+		}
+		mr, err := c.GetMR(ref.iid)
 		if err == nil {
 			return a.checkoutRemote(f, c, mr)
 		}

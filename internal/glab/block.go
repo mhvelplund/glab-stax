@@ -11,8 +11,9 @@ const (
 	blockBegin = "<!-- glab-stax:begin "
 	blockEnd   = "<!-- glab-stax:end -->"
 	// Marker is searched for to find stacks on GitLab.
-	Marker  = "glab-stax:begin"
-	repoURL = "https://github.com/mhvelplund/glab-stax"
+	Marker = "glab-stax:begin"
+	// RepoURL is glab-stax's home page.
+	RepoURL = "https://github.com/mhvelplund/glab-stax"
 )
 
 var blockRe = regexp.MustCompile(`(?s)\n*<!-- glab-stax:begin (\{.*?\}) -->.*?<!-- glab-stax:end -->\n*`)
@@ -37,7 +38,7 @@ func RenderBlock(info StackInfo, self int) string {
 	var b strings.Builder
 	b.WriteString(blockBegin + string(data) + " -->\n")
 	b.WriteString("---\n\n")
-	fmt.Fprintf(&b, "**Stack** (managed by [glab stax](%s))\n\n", repoURL)
+	fmt.Fprintf(&b, "**Stack** (managed by [glab stax](%s))\n\n", RepoURL)
 	for i := len(info.MRs) - 1; i >= 0; i-- {
 		m := info.MRs[i]
 		if m.IID == self {
@@ -73,7 +74,18 @@ func SetBlock(desc, block string) string {
 	return base + "\n\n" + block
 }
 
-// StripBlock removes the stack block from desc.
+// StripBlock removes the stack block from desc. Text before and after a block
+// in the middle stays in separate paragraphs.
 func StripBlock(desc string) string {
-	return strings.TrimRight(blockRe.ReplaceAllString(desc, "\n"), "\n ")
+	var b strings.Builder
+	last := 0
+	for _, m := range blockRe.FindAllStringIndex(desc, -1) {
+		b.WriteString(desc[last:m[0]])
+		if m[0] > 0 && m[1] < len(desc) {
+			b.WriteString("\n\n")
+		}
+		last = m[1]
+	}
+	b.WriteString(desc[last:])
+	return strings.TrimRight(b.String(), "\n ")
 }

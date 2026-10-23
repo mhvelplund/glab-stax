@@ -108,7 +108,7 @@ func (a *App) runMerge(o mergeOptions, args []string) error {
 		if err != nil {
 			return err
 		}
-		known, err := engine.SyncMRs(c, s)
+		known, err := engine.SyncMRs(c, a.repo(), s)
 		if err != nil {
 			return err
 		}
@@ -151,25 +151,39 @@ func (a *App) mergeTarget(f *stack.File, args []string) (*stack.Stack, int, erro
 		s, _, err := a.currentStack(f)
 		return s, 0, err
 	}
-	iid, ok := parseMRRef(args[0])
+	ref, ok := parseMRRef(args[0])
 	if !ok {
 		return nil, 0, exitcode.New(exitcode.InvalidArgs, "expected an MR number, got %q", args[0])
 	}
-	if s, _ := findLocalMR(f, iid); s != nil {
-		return s, iid, nil
+	iid := ref.iid
+	if ref.project == "" {
+		if s, _ := findLocalMR(f, iid); s != nil {
+			return s, iid, nil
+		}
 	}
-	// A stack that is only on GitLab: set it up locally without switching branches.
 	c, err := a.gitlab(a.defaultRemote())
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := ref.check(c); err != nil {
+		return nil, 0, err
+	}
+	if s, _ := findLocalMR(f, iid); s != nil {
+		return s, iid, nil
+	}
+	// A stack that is only on GitLab: set it up locally without switching
+	// branches. Only a stack recorded in a stack block: merging a chain merely
+	// inferred from target branches could merge MRs that are not a stack.
 	mr, err := c.GetMR(iid)
 	if err != nil {
-		return nil, 0, exitcode.Wrap(exitcode.NotInStack, fmt.Errorf("!%d: %w", iid, err))
-	}
-	info, err := remoteStackFor(c, mr)
-	if err != nil {
+		if strings.Contains(err.Error(), "404") { // no such MR; other errors stay GitLab failures
+			return nil, 0, exitcode.Wrap(exitcode.NotInStack, fmt.Errorf("!%d: %w", iid, err))
+		}
 		return nil, 0, err
+	}
+	info, ok := glab.ParseBlock(mr.Description)
+	if !ok {
+		return nil, 0, exitcode.New(exitcode.NotInStack, "!%d is not part of a stack; check it out with `glab stax checkout %d` first if it is", iid, iid)
 	}
 	s, err := a.setupRemoteStack(f, c, info, a.defaultRemote())
 	return s, iid, err
@@ -271,7 +285,11 @@ func (m *merger) run(candidates []*stack.Branch) error {
 		return err
 	}
 	for i, b := range candidates {
-		if i > 0 {
+		// After a merge the next layer is restacked onto the trunk. The first
+		// one too if its MR still targets a merged layer (an earlier merge run
+		// stopped, or a layer was merged on GitLab): GitLab would merge it into
+		// that stale branch instead of the trunk.
+		if i > 0 || m.known[b.Name].TargetBranch != m.s.Parent(b.Name) {
 			if err := m.restack(b); err != nil {
 				return fail(err)
 			}
@@ -291,12 +309,13 @@ func (m *merger) run(candidates []*stack.Branch) error {
 			pendingDelete = b.Name
 		}
 	}
-	// Restack whatever is left above the merged layers.
+	// Restack whatever is left above the merged layers. The descriptions are
+	// read again: the merges may have taken long enough for them to be edited.
 	if rest := m.s.Bottom(); rest != nil {
 		if err := m.restack(rest); err != nil {
 			return fail(err)
 		}
-		if err := engine.UpdateBlocks(m.c, m.s, m.known); err != nil {
+		if err := engine.UpdateBlocks(m.c, m.s, map[string]*glab.MR{}); err != nil {
 			return fail(err)
 		}
 	} else if _, err := m.r.UpdateFromRemote(m.s, m.remote); err != nil {
@@ -346,16 +365,24 @@ func (m *merger) mergeOne(b *stack.Branch) (*glab.MR, error) {
 	if err != nil {
 		return nil, err
 	}
+	// GitLab ignores squash=false on merge and goes by the MR's own setting,
+	// which projects that encourage squashing turn on for new MRs.
+	if !m.squash && mr.Squash {
+		if _, err := m.c.UpdateMR(iid, map[string]any{"squash": false}); err != nil {
+			m.app.infof("Warning: could not turn off squashing for !%d: %v", iid, err)
+		}
+	}
 	m.app.infof("Merging !%d (%s)...", iid, b.Name)
 	if mr, err = m.c.Merge(iid, m.squash, sha); err != nil {
 		return nil, fmt.Errorf("!%d could not be merged: %w", iid, err)
 	}
 	waiting := false
 	for !mr.Merged() {
+		locked := mr.State == "locked" // GitLab is performing the merge
 		switch {
-		case mr.State != "opened":
+		case !locked && mr.State != "opened":
 			return nil, exitcode.New(exitcode.GitLabFailure, "!%d was %s instead of merged", iid, mr.State)
-		case !mr.AutoMerge:
+		case !locked && !mr.AutoMerge:
 			reason := mr.MergeError
 			if reason == "" {
 				reason = "auto-merge was cancelled"

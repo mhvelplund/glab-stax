@@ -28,6 +28,7 @@ type Picker struct {
 	query     string
 	searching bool
 	started   bool
+	height    int // terminal rows, 0 until known
 }
 
 // NewPicker returns a picker with nothing chosen yet.
@@ -62,6 +63,10 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		p.height = size.Height
+		return p, nil
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return p, nil
@@ -73,13 +78,15 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.searching, p.query = false, ""
 		case tea.KeyEnter:
 			p.searching = false
-		case tea.KeyBackspace:
-			if p.query != "" {
-				p.query = p.query[:len(p.query)-1]
+		case tea.KeyBackspace, tea.KeyCtrlH: // some terminals send ^H for backspace
+			if r := []rune(p.query); len(r) > 0 {
+				p.query = string(r[:len(r)-1])
 			}
 		case tea.KeyRunes, tea.KeySpace:
-			p.query += string(key.Runes)
-			if key.Type == tea.KeySpace {
+			// bubbletea delivers a space as KeySpace carrying the rune.
+			if len(key.Runes) > 0 {
+				p.query += string(key.Runes)
+			} else if key.Type == tea.KeySpace {
 				p.query += " "
 			}
 		case tea.KeyUp, tea.KeyDown:
@@ -117,6 +124,18 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+// listRoom returns how many list rows fit on the screen, or 0 if unknown.
+func (p *Picker) listRoom() int {
+	if p.height == 0 {
+		return 0
+	}
+	overhead := 4 // title, blank line, blank line, help
+	if len(p.Tabs) > 0 {
+		overhead += 2
+	}
+	return max(p.height-overhead, 1)
+}
+
 func (p *Picker) move(down bool, n int) {
 	if n == 0 {
 		return
@@ -152,8 +171,15 @@ func (p *Picker) View() string {
 	if len(vis) == 0 {
 		b.WriteString(dimStyle.Render("  nothing matches") + "\n")
 	}
-	for pos, i := range vis {
-		it := p.Items[i]
+	// Show only as many rows as fit, keeping the cursor in view: the terminal
+	// would otherwise cut off the top of the list.
+	first, last := 0, len(vis)
+	if room := p.listRoom(); room > 0 && len(vis) > room {
+		first = min(max(p.cursor-room/2, 0), len(vis)-room)
+		last = first + room
+	}
+	for pos := first; pos < last; pos++ {
+		it := p.Items[vis[pos]]
 		line := it.Title
 		if it.Detail != "" {
 			line += "  " + dimStyle.Render(it.Detail)

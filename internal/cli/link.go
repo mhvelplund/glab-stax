@@ -41,13 +41,6 @@ func (a *App) runLink(o linkOptions, args []string) error {
 	if remote == "" {
 		remote = a.defaultRemote()
 	}
-	base := o.base
-	if base == "" {
-		var err error
-		if base, err = g.DefaultBranch(remote); err != nil {
-			return exitcode.Wrap(exitcode.InvalidArgs, err)
-		}
-	}
 	c, err := a.gitlab(remote)
 	if err != nil {
 		return err
@@ -61,8 +54,11 @@ func (a *App) runLink(o linkOptions, args []string) error {
 	var items []item
 	var toPush []string
 	for _, arg := range args {
-		if iid, ok := parseMRRef(arg); ok && !g.BranchExists(arg) {
-			mr, err := c.GetMR(iid)
+		if ref, ok := parseMRRef(arg); ok && !g.BranchExists(arg) {
+			if err := ref.check(c); err != nil {
+				return err
+			}
+			mr, err := c.GetMR(ref.iid)
 			if err != nil {
 				return err
 			}
@@ -72,9 +68,46 @@ func (a *App) runLink(o linkOptions, args []string) error {
 		if !g.BranchExists(arg) {
 			return exitcode.New(exitcode.InvalidArgs, "%q is neither a local branch nor an MR", arg)
 		}
-		items = append(items, item{branch: arg})
+		mr, err := c.FindMRForBranch(arg)
+		if err != nil {
+			return err
+		}
+		items = append(items, item{branch: arg, mr: mr})
 		toPush = append(toPush, arg)
 	}
+
+	// Merge into any existing stack: keep its MRs, insert ours in order.
+	var info glab.StackInfo
+	existing := false
+	for _, it := range items {
+		if it.mr == nil {
+			continue
+		}
+		if b, ok := glab.ParseBlock(it.mr.Description); ok {
+			info, existing = *b, true
+			break
+		}
+	}
+	// The bottom item targets --base. Without it, an item already in the stack
+	// keeps the layer below it, and a new one goes on the stack's trunk, or
+	// the default branch for a new stack.
+	base := o.base
+	if base == "" && existing {
+		base = info.Trunk
+		if first := items[0].mr; first != nil {
+			for j, m := range info.MRs {
+				if m.IID == first.IID && j > 0 {
+					base = info.MRs[j-1].Branch
+				}
+			}
+		}
+	}
+	if base == "" {
+		if base, err = g.DefaultBranch(remote); err != nil {
+			return exitcode.Wrap(exitcode.InvalidArgs, err)
+		}
+	}
+
 	if err := engine.Push(g, remote, toPush); err != nil {
 		return err
 	}
@@ -82,11 +115,6 @@ func (a *App) runLink(o linkOptions, args []string) error {
 	target := base
 	for i := range items {
 		it := &items[i]
-		if it.mr == nil {
-			if it.mr, err = c.FindMRForBranch(it.branch); err != nil {
-				return err
-			}
-		}
 		switch {
 		case it.mr == nil || !it.mr.Open():
 			title, body := engine.DefaultTitleBody(g, target, it.branch)
@@ -108,13 +136,8 @@ func (a *App) runLink(o linkOptions, args []string) error {
 		target = it.branch
 	}
 
-	// Merge into any existing stack: keep its MRs, insert ours in order.
-	info := glab.StackInfo{Trunk: base}
-	for _, it := range items {
-		if existing, ok := glab.ParseBlock(it.mr.Description); ok {
-			info = *existing
-			break
-		}
+	if !existing {
+		info = glab.StackInfo{Trunk: base}
 	}
 	pos := -1
 	for _, it := range items {
@@ -131,10 +154,20 @@ func (a *App) runLink(o linkOptions, args []string) error {
 		}
 		pos = idx
 	}
+	if len(info.MRs) > 0 && info.MRs[0].IID == items[0].mr.IID {
+		info.Trunk = base // the bottom item now targets base
+	}
+	// The MRs handled above are current; only the rest are fetched.
+	current := map[int]*glab.MR{}
+	for _, it := range items {
+		current[it.mr.IID] = it.mr
+	}
 	for _, m := range info.MRs {
-		mr, err := c.GetMR(m.IID)
-		if err != nil {
-			return err
+		mr := current[m.IID]
+		if mr == nil {
+			if mr, err = c.GetMR(m.IID); err != nil {
+				return err
+			}
 		}
 		if !mr.Open() {
 			continue

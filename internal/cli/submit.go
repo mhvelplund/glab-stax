@@ -64,7 +64,7 @@ func (a *App) runSubmit(o submitOptions) error {
 		if err != nil {
 			return err
 		}
-		known, err := engine.SyncMRs(c, s)
+		known, err := engine.SyncMRs(c, a.repo(), s)
 		if err != nil {
 			return err
 		}
@@ -200,6 +200,7 @@ func (a *App) submitEditor(s *stack.Stack, known map[string]*glab.MR) (map[strin
 		nodes = append(nodes, n)
 	}
 	e := tui.NewSubmitEditor(nodes)
+	e.OpenURL = a.openURL
 	if _, err := a.runTUI(e); err != nil {
 		return nil, err
 	}

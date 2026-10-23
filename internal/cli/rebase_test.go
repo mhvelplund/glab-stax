@@ -194,3 +194,109 @@ func TestRebasePreserveDates(t *testing.T) {
 		t.Fatalf("author/committer dates differ: %s", dates)
 	}
 }
+
+// a was squash-merged on GitLab (not yet known locally) and b conflicts with
+// the trunk: after resolving, b's base is the trunk and a stays merged.
+func TestRebaseContinueKeepsMergedFlags(t *testing.T) {
+	h := threeLayers(t)
+	h.must("submit", "--auto")
+	h.repo.Git("checkout", "--quiet", "b")
+	h.repo.Commit("a.txt", "from b\n", "b edits a.txt")
+	h.must("push")
+	h.repo.PushFromElsewhere("main", "a.txt", "a\n", "a1 (squashed !1)")
+	h.repo.PushFromElsewhere("main", "a.txt", "upstream\n", "upstream edits a.txt")
+	h.gl.MRs[1].State = "merged"
+
+	if r := h.run("rebase"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("exit %d: %v\n%s", exitcode.Of(r.e), r.e, r.err)
+	}
+	writeFile(t, h.repo.Dir+"/a.txt", "resolved\n")
+	h.repo.Git("add", "a.txt")
+	h.must("rebase", "--continue")
+	s := h.file().Stacks[0]
+	if !s.Branches[0].Merged || s.Branches[1].Base != h.sha("origin/main") {
+		t.Fatalf("a merged = %v, b base = %s, want %s", s.Branches[0].Merged, s.Branches[1].Base, h.sha("origin/main"))
+	}
+}
+
+// After `git rebase --abort` by hand, --continue rebases the layer again
+// instead of reporting it done.
+func TestRebaseContinueAfterManualAbort(t *testing.T) {
+	h := conflictSetup(t)
+	if r := h.run("rebase", "--no-trunk"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("exit %d: %v", exitcode.Of(r.e), r.e)
+	}
+	h.repo.Git("rebase", "--abort")
+	if r := h.run("rebase", "--continue"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("--continue after a manual abort: exit %d: %v\n%s", exitcode.Of(r.e), r.e, r.err)
+	}
+	writeFile(t, h.repo.Dir+"/a.txt", "resolved\n")
+	h.repo.Git("add", "a.txt")
+	h.must("rebase", "--continue")
+	h.assertStacked("a", "b", "3")
+	h.assertStacked("b", "c", "1")
+}
+
+// A paused rebase is aborted while another worktree has uncommitted work.
+func TestRebaseAbortKeepsOtherWorktreeChanges(t *testing.T) {
+	h := threeLayers(t)
+	h.repo.Git("checkout", "--quiet", "c")
+	h.repo.Commit("a.txt", "from c\n", "c edits a.txt")
+	h.repo.Git("checkout", "--quiet", "a")
+	writeFile(t, h.repo.Dir+"/a.txt", "from a\n")
+	h.repo.Git("commit", "--quiet", "-am", "a edits a.txt")
+	wt := filepath.Join(t.TempDir(), "wt-b")
+	h.repo.Git("worktree", "add", "--quiet", wt, "b")
+	oldB := h.sha("b")
+
+	if r := h.run("rebase", "--no-trunk"); exitcode.Of(r.e) != exitcode.RebaseConflict {
+		t.Fatalf("exit %d: %v\n%s", exitcode.Of(r.e), r.e, r.err)
+	}
+	writeFile(t, wt+"/b.txt", "work in progress\n")
+	h.must("rebase", "--abort")
+	if got := h.repo.Git("-C", wt, "status", "--porcelain"); !strings.Contains(got, "b.txt") {
+		t.Fatalf("uncommitted change in %s was discarded (status %q)", wt, got)
+	}
+	if h.sha("b") != oldB {
+		t.Fatal("b not restored")
+	}
+}
+
+// --no-trunk leaves the bottom unmerged layer alone, also above a merged one.
+func TestRebaseNoTrunkKeepsBottomAboveMergedLayer(t *testing.T) {
+	h := threeLayers(t)
+	if err := mutateFile(h, func(f *stack.File) { f.Stacks[0].Branches[0].Merged = true }); err != nil {
+		t.Fatal(err)
+	}
+	oldB := h.sha("b")
+	h.must("rebase", "--no-trunk")
+	if h.sha("b") != oldB {
+		t.Fatal("--no-trunk moved the bottom unmerged layer")
+	}
+	h.assertStacked("b", "c", "1")
+}
+
+// An MR recorded for a layer that turns out to belong to another branch (an
+// IID from another project) does not make the layer merged.
+func TestRebaseIgnoresMRsOfOtherBranches(t *testing.T) {
+	h := threeLayers(t)
+	h.must("submit", "--auto")
+	h.gl.MRs[2].SourceBranch, h.gl.MRs[2].State = "someone-else", "merged"
+	h.must("rebase", "--no-trunk")
+	if h.file().Stacks[0].Get("b").Merged {
+		t.Fatal("b was marked merged by another branch's MR")
+	}
+}
+
+// A pushed commit dropped on purpose stays dropped.
+func TestRebaseKeepsDroppedPushedCommit(t *testing.T) {
+	h := threeLayers(t)
+	h.must("push")
+	h.repo.Git("checkout", "--quiet", "b")
+	h.repo.Git("reset", "--quiet", "--hard", "HEAD~1") // drop b2
+	h.must("rebase")
+	if strings.Contains(h.repo.Git("log", "--format=%s", "main..c"), "b2") {
+		t.Fatal("the dropped commit came back")
+	}
+	h.assertStacked("a", "b", "1")
+}

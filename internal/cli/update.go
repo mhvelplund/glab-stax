@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -14,10 +13,10 @@ import (
 	"time"
 
 	"github.com/mhvelplund/glab-stax/internal/glab"
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 const (
-	repoURL       = "https://github.com/mhvelplund/glab-stax"
 	releasesAPI   = "https://api.github.com/repos/mhvelplund/glab-stax/releases/latest"
 	checkInterval = 24 * time.Hour
 )
@@ -25,7 +24,7 @@ const (
 var glabExec = glab.ExecRunner
 
 func issueURL(title string) string {
-	u := repoURL + "/issues/new"
+	u := glab.RepoURL + "/issues/new"
 	if title != "" {
 		u += "?title=" + url.QueryEscape(title)
 	}
@@ -36,11 +35,7 @@ func (a *App) openURL(u string) error {
 	if a.OpenURL != nil {
 		return a.OpenURL(u)
 	}
-	opener := "xdg-open"
-	if _, err := exec.LookPath("open"); err == nil {
-		opener = "open"
-	}
-	return exec.Command(opener, u).Start()
+	return tui.OpenBrowser(u)
 }
 
 // version returns the build version: -ldflags, else the module version from go install.
@@ -75,16 +70,22 @@ func (a *App) updateNotifier() func() {
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &cache)
 	}
+	save := func(c updateCache) {
+		if data, err := json.Marshal(c); err == nil {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, data, 0o644)
+		}
+	}
 	done := make(chan struct{})
-	if time.Since(cache.CheckedAt) > checkInterval {
+	if now := a.Now(); now.Sub(cache.CheckedAt) > checkInterval {
+		// Record the attempt first: a check that fails or outlives the
+		// command is not retried, and waited for, by every later command.
+		save(updateCache{CheckedAt: now, Latest: cache.Latest})
 		go func() {
 			defer close(done)
 			if latest, err := fetchLatest(); err == nil {
-				cache = updateCache{CheckedAt: time.Now(), Latest: latest}
-				if data, err := json.Marshal(cache); err == nil {
-					_ = os.MkdirAll(filepath.Dir(path), 0o755)
-					_ = os.WriteFile(path, data, 0o644)
-				}
+				cache = updateCache{CheckedAt: now, Latest: latest}
+				save(cache)
 			}
 		}()
 	} else {
@@ -97,7 +98,7 @@ func (a *App) updateNotifier() func() {
 			return
 		}
 		if newer(cache.Latest, cur) {
-			fmt.Fprintf(a.Err, "\nA new release of glab-stax is available: %s → %s\n%s/releases/latest\n", cur, cache.Latest, repoURL)
+			fmt.Fprintf(a.Err, "\nA new release of glab-stax is available: %s → %s\n%s/releases/latest\n", cur, cache.Latest, glab.RepoURL)
 		}
 	}
 }

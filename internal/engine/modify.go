@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -29,12 +30,15 @@ type commitRange struct {
 type modifyState struct {
 	StackKey       string                 `json:"stackKey"`
 	OriginalBranch string                 `json:"originalBranch"`
-	OriginalDir    string                 `json:"originalDir"`
-	Layers         []Layer                `json:"layers"` // bottom first
+	OriginalDir    string                 `json:"originalDir"` // the worktree the layers are built in
+	Layers         []Layer                `json:"layers"`      // bottom first
 	Ranges         map[string]commitRange `json:"ranges"`
 	Start          string                 `json:"start"`   // where the bottom layer starts
 	NewTips        map[string]string      `json:"newTips"` // by layer name, as layers are built
 	Next           int                    `json:"next"`    // layer being built
+	// PickStart is the commit layer Next's cherry-picks started from, so a
+	// resumed modify can tell whether they landed.
+	PickStart string `json:"pickStart,omitempty"`
 }
 
 // Modifier applies a restructured layer list to a stack.
@@ -44,19 +48,31 @@ type Modifier struct {
 	Log   func(format string, args ...any)
 }
 
+// at returns a Modifier that works in worktree dir.
+func (m *Modifier) at(dir string) *Modifier {
+	return &Modifier{Repo: m.Repo.At(dir), Store: m.Store, Log: m.Log}
+}
+
 // Ranges returns each active layer's own commits, keyed by branch.
 func (m *Modifier) Ranges(s *stack.Stack) (map[string]commitRange, error) {
 	out := map[string]commitRange{}
 	for _, b := range s.Active() {
-		tip, err := m.Repo.RevParse("refs/heads/" + b.Name)
+		tip, err := m.Repo.RevParse(git.Ref(b.Name))
 		if err != nil {
 			return nil, err
 		}
 		base := b.Base
-		if base == "" || !m.Repo.IsAncestor(base, tip) {
-			if base, err = m.Repo.MergeBase(s.Parent(b.Name), tip); err != nil {
-				return nil, err
+		mb, mbErr := m.Repo.MergeBase(git.Ref(s.Parent(b.Name)), tip)
+		switch {
+		case base == "" || !m.Repo.IsAncestor(base, tip):
+			if mbErr != nil {
+				return nil, mbErr
 			}
+			base = mb
+		case mbErr == nil && base != mb && m.Repo.IsAncestor(base, mb):
+			// The layer was restacked by hand onto newer parent commits since
+			// its base was recorded; those commits are not its own.
+			base = mb
 		}
 		out[b.Name] = commitRange{Base: base, Tip: tip}
 	}
@@ -82,6 +98,9 @@ func (m *Modifier) CheckLinear(ranges map[string]commitRange) error {
 func (m *Modifier) Apply(s *stack.Stack, layers []Layer) error {
 	if m.Store.HasJournal(stack.ModifyJournal) {
 		return exitcode.New(exitcode.RebaseInProgress, "a modify is already in progress; run `glab stax modify --continue` or `--abort`")
+	}
+	if s.Bottom() == nil {
+		return exitcode.New(exitcode.Generic, "every layer is merged; nothing to modify")
 	}
 	if err := m.validate(s, layers); err != nil {
 		return err
@@ -109,30 +128,48 @@ func (m *Modifier) Apply(s *stack.Stack, layers []Layer) error {
 	if err := m.Store.SaveJournal(stack.ModifyJournal, st); err != nil {
 		return err
 	}
-	return m.build(s, st, 0)
+	return m.at(top).build(s, st, 0)
 }
 
-// Continue resumes after the user resolved a cherry-pick conflict.
+// Continue resumes after the user resolved a cherry-pick conflict, in the
+// worktree the modify started in, whichever worktree it is run from.
 func (m *Modifier) Continue(f *stack.File) error {
 	st, s, err := m.load(f)
 	if err != nil {
 		return err
 	}
-	if m.cherryPicking() {
-		if files, _ := m.Repo.ConflictedFiles(); len(files) > 0 {
-			m.reportConflict(st.Layers[st.Next].Name, files)
+	w := m.at(st.OriginalDir)
+	layer := st.Layers[st.Next].Name
+	resumed := false
+	if w.cherryPicking() {
+		if files, _ := w.Repo.ConflictedFiles(); len(files) > 0 {
+			w.reportConflict(layer, files)
 			return exitcode.New(exitcode.RebaseConflict, "resolve the conflicts and `git add` the files first")
 		}
-		if err := m.continuePick(); err != nil {
-			return m.conflict(st, err)
+		if err := w.continuePick(); err != nil {
+			return w.conflict(st, err)
 		}
+		resumed = true
 	}
-	head, err := m.Repo.RevParse("HEAD")
+	head, err := w.Repo.RevParse("HEAD")
 	if err != nil {
 		return err
 	}
-	st.NewTips[st.Layers[st.Next].Name] = head
-	return m.build(s, st, st.Next+1)
+	if !resumed {
+		// No cherry-pick was paused, so check what happened to the layer.
+		switch {
+		case st.PickStart == "" || head == st.PickStart:
+			// Its cherry-picks never landed: git refused to start them, or they
+			// were aborted with git. Build the layer again.
+			w.Log("Rebuilding %s", layer)
+			return w.build(s, st, st.Next)
+		case !w.Repo.IsAncestor(st.PickStart, head):
+			return exitcode.New(exitcode.Generic, "HEAD in %s moved away from the layer being rebuilt; check out %s there again, or run `glab stax modify --abort`", st.OriginalDir, short(st.PickStart))
+		}
+		// The picks were finished with git commands.
+	}
+	st.NewTips[layer] = head
+	return w.build(s, st, st.Next+1)
 }
 
 // Abort cancels a paused modify. Branches were not moved yet, so only the
@@ -146,13 +183,14 @@ func (m *Modifier) Abort() error {
 	if !ok {
 		return exitcode.New(exitcode.Generic, "no modify in progress")
 	}
-	if m.cherryPicking() {
-		if _, err := m.Repo.Run("cherry-pick", "--abort"); err != nil {
+	w := m.at(st.OriginalDir)
+	if w.cherryPicking() {
+		if _, err := w.Repo.Run("cherry-pick", "--abort"); err != nil {
 			return err
 		}
 	}
 	if st.OriginalBranch != "" {
-		if err := m.Repo.At(st.OriginalDir).Checkout(st.OriginalBranch); err != nil {
+		if err := w.Repo.Checkout(st.OriginalBranch); err != nil {
 			return err
 		}
 	}
@@ -161,11 +199,13 @@ func (m *Modifier) Abort() error {
 }
 
 // continuePick resumes the cherry-pick. A commit that became empty through
-// the conflict resolution is skipped, as it no longer changes anything.
+// the conflict resolution is skipped, as it no longer changes anything. Git
+// runs in the C locale so that its "now empty" message can be recognized.
 func (m *Modifier) continuePick() error {
-	_, err := m.Repo.RunEnv([]string{"GIT_EDITOR=true"}, "cherry-pick", "--continue")
+	env := []string{"GIT_EDITOR=true", "LC_ALL=C"}
+	_, err := m.Repo.RunEnv(env, "cherry-pick", "--continue")
 	for err != nil && strings.Contains(err.Error(), "now empty") {
-		_, err = m.Repo.RunEnv([]string{"GIT_EDITOR=true"}, "cherry-pick", "--skip")
+		_, err = m.Repo.RunEnv(env, "cherry-pick", "--skip")
 	}
 	return err
 }
@@ -202,7 +242,10 @@ func (m *Modifier) validate(s *stack.Stack, layers []Layer) error {
 		if !m.Repo.ValidBranchName(l.Name) || l.Name == s.Trunk {
 			return exitcode.New(exitcode.InvalidArgs, "%q is not a usable branch name", l.Name)
 		}
-		if l.Name != l.Orig && m.Repo.BranchExists(l.Name) && s.Get(l.Name) == nil {
+		// A new name must be free: renaming onto a branch that still exists (even
+		// a folded or dropped layer's) would fail halfway through, and an
+		// inserted layer would take over that branch.
+		if l.Name != l.Orig && m.Repo.BranchExists(l.Name) {
 			return exitcode.New(exitcode.InvalidArgs, "branch %q already exists", l.Name)
 		}
 		for _, src := range l.Sources {
@@ -216,17 +259,23 @@ func (m *Modifier) validate(s *stack.Stack, layers []Layer) error {
 	return nil
 }
 
-func (m *Modifier) cherryPicking() bool {
+// pickHead reports whether a cherry-pick stopped on a conflict.
+func (m *Modifier) pickHead() bool {
+	_, err := m.Repo.Run("rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD")
+	return err == nil
+}
+
+// sequencerActive reports whether a multi-commit cherry-pick is unfinished.
+func (m *Modifier) sequencerActive() bool {
 	dir, err := m.Repo.GitDir()
 	if err != nil {
 		return false
 	}
-	_, err = m.Repo.Run("rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD")
-	if err == nil {
-		return true
-	}
-	return fileExists(dir + "/sequencer/todo")
+	_, err = os.Stat(filepath.Join(dir, "sequencer", "todo"))
+	return err == nil
 }
+
+func (m *Modifier) cherryPicking() bool { return m.pickHead() || m.sequencerActive() }
 
 // build creates each layer from st.Layers[from:] on top of the one below,
 // then moves the branches and updates s.
@@ -248,9 +297,9 @@ func (m *Modifier) build(s *stack.Stack, st *modifyState, from int) error {
 			continue
 		}
 		if _, err := m.Repo.Run("checkout", "--quiet", "--detach", start); err != nil {
-			return err
+			return fmt.Errorf("building %s failed: %w; fix the problem, then run `glab stax modify --continue` (or `--abort`)", l.Name, err)
 		}
-		st.Next = i
+		st.Next, st.PickStart = i, start
 		if err := m.Store.SaveJournal(stack.ModifyJournal, st); err != nil {
 			return err
 		}
@@ -284,12 +333,19 @@ func (m *Modifier) build(s *stack.Stack, st *modifyState, from int) error {
 }
 
 func (m *Modifier) conflict(st *modifyState, err error) error {
-	if !m.cherryPicking() {
-		return fmt.Errorf("building %s failed: %w", st.Layers[st.Next].Name, err)
+	layer := st.Layers[st.Next].Name
+	if !m.pickHead() {
+		// Not a conflict: git refused to pick a commit at all (e.g. untracked
+		// files in the way). Undo the partial sequence so that --continue builds
+		// the layer again; continuing git's sequence would skip that commit.
+		if m.sequencerActive() {
+			_, _ = m.Repo.Run("cherry-pick", "--abort")
+		}
+		return fmt.Errorf("building %s failed: %w; fix the problem, then run `glab stax modify --continue` (or `--abort`)", layer, err)
 	}
 	files, _ := m.Repo.ConflictedFiles()
-	m.reportConflict(st.Layers[st.Next].Name, files)
-	return exitcode.New(exitcode.RebaseConflict, "conflict while rebuilding %s", st.Layers[st.Next].Name)
+	m.reportConflict(layer, files)
+	return exitcode.New(exitcode.RebaseConflict, "conflict while rebuilding %s", layer)
 }
 
 func (m *Modifier) reportConflict(layer string, files []string) {
@@ -305,6 +361,9 @@ func (m *Modifier) reportConflict(layer string, files []string) {
 // stack metadata and restores a sensible checkout.
 func (m *Modifier) finish(s *stack.Stack, st *modifyState) error {
 	g := m.Repo
+	if err := m.checkMovable(st); err != nil {
+		return err
+	}
 	old := map[string]*stack.Branch{}
 	for _, b := range s.Branches {
 		old[b.Name] = b
@@ -341,7 +400,9 @@ func (m *Modifier) finish(s *stack.Stack, st *modifyState) error {
 	}
 	s.Branches = append(merged, active...)
 
-	// Check out the original branch, following renames, else the nearest survivor.
+	// Check out the original branch, following renames, else the nearest
+	// survivor. The branches have moved already, so failing here is only a
+	// warning.
 	dest := st.OriginalBranch
 	for _, l := range st.Layers {
 		if l.Orig == st.OriginalBranch {
@@ -351,30 +412,59 @@ func (m *Modifier) finish(s *stack.Stack, st *modifyState) error {
 	if s.Get(dest) == nil && dest != s.Trunk {
 		dest = s.Top().Name
 	}
-	wt := g.At(st.OriginalDir)
-	if owner, _ := g.WorktreeFor(dest); owner == "" || owner == st.OriginalDir {
-		if err := wt.Checkout(dest); err != nil {
-			return err
-		}
-	} else if err := wt.Checkout(s.Trunk); err != nil {
-		return err
+	owner, err := g.WorktreeFor(dest)
+	if err == nil && owner != "" && !git.SamePath(owner, st.OriginalDir) {
+		dest = s.Trunk
+	}
+	if err == nil {
+		err = g.At(st.OriginalDir).Checkout(dest)
+	}
+	if err != nil {
+		m.Log("Warning: could not check out %s in %s: %v", dest, st.OriginalDir, err)
 	}
 	m.Log("Stack is now: %s", strings.Join(layerNames(st.Layers), " → "))
 	m.Log("Run `glab stax submit` to update the merge requests.")
 	return m.Store.ClearJournal(stack.ModifyJournal)
 }
 
-// moveBranch points l's branch at tip, creating or renaming it as needed.
+// checkMovable fails before any branch moves if a layer branch checked out in
+// another worktree has to move while that worktree has uncommitted changes:
+// it may have changed since the modify started or paused.
+func (m *Modifier) checkMovable(st *modifyState) error {
+	for _, l := range st.Layers {
+		owner, err := m.Repo.WorktreeFor(l.Name)
+		if err != nil {
+			return err
+		}
+		if owner == "" || git.SamePath(owner, st.OriginalDir) {
+			continue
+		}
+		wt := m.Repo.At(owner)
+		if head, _ := wt.RevParse("HEAD"); head == st.NewTips[l.Name] {
+			continue
+		}
+		if clean, err := wt.IsClean(); err != nil || !clean {
+			return exitcode.New(exitcode.Generic, "%s is checked out in %s, which has uncommitted changes; commit or stash them, then run `glab stax modify --continue`", l.Name, owner)
+		}
+	}
+	return nil
+}
+
+// moveBranch points l's branch at tip, creating or renaming it as needed. It
+// can be repeated after a failure: a rename that already happened is skipped.
 func (m *Modifier) moveBranch(l Layer, tip, here string) error {
 	g := m.Repo
-	if l.Orig != "" && l.Orig != l.Name {
+	if l.Orig != "" && l.Orig != l.Name && g.BranchExists(l.Orig) {
 		owner, err := g.WorktreeFor(l.Orig)
 		if err != nil {
 			return err
 		}
-		if owner != "" && !samePath(owner, here) {
+		if owner != "" && !git.SamePath(owner, here) {
 			// Renaming a branch checked out elsewhere would surprise that worktree.
 			m.Log("Warning: %s is checked out in %s; created %s and kept %s", l.Orig, owner, l.Name, l.Orig)
+			if g.BranchExists(l.Name) {
+				return g.SetBranchSHA(l.Name, tip)
+			}
 			return g.CreateBranch(l.Name, tip)
 		}
 		if _, err := g.Run("branch", "-m", l.Orig, l.Name); err != nil {
@@ -392,19 +482,11 @@ func (m *Modifier) moveBranch(l Layer, tip, here string) error {
 		if cur, _ := g.At(owner).RevParse("HEAD"); cur == tip {
 			return nil
 		}
-		_, err = g.At(owner).Run("reset", "--hard", "--quiet", tip)
+		// --keep refuses rather than discard uncommitted changes.
+		_, err = g.At(owner).Run("reset", "--keep", "--quiet", tip)
 		return err
 	}
 	return g.SetBranchSHA(l.Name, tip)
-}
-
-func samePath(a, b string) bool {
-	ra, err1 := filepath.EvalSymlinks(a)
-	rb, err2 := filepath.EvalSymlinks(b)
-	if err1 != nil || err2 != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	return ra == rb
 }
 
 func layerNames(ls []Layer) []string {
