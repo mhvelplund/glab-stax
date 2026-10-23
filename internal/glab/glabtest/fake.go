@@ -28,6 +28,12 @@ type GitLab struct {
 	Fail map[string]error
 	// OnMerge runs when an MR is merged, e.g. to update the git remote.
 	OnMerge func(mr *glab.MR, squash bool) error
+	// Project is returned by GET projects/:project.
+	Project glab.ProjectInfo
+	// PendingPolls makes a merged MR report "opened" with auto-merge set for
+	// this many GETs before it shows as merged, like a running pipeline.
+	PendingPolls int
+	pending      map[int]int
 }
 
 // New returns an empty fake.
@@ -86,6 +92,9 @@ func (g *GitLab) Run(args ...string) ([]byte, error) {
 			return nil, ferr
 		}
 	}
+	if c.Endpoint == "projects/:project" {
+		return json.Marshal(g.Project)
+	}
 	const base = "projects/:project/merge_requests"
 	rest, ok := strings.CutPrefix(c.Endpoint, base)
 	if !ok {
@@ -108,6 +117,12 @@ func (g *GitLab) Run(args ...string) ([]byte, error) {
 	}
 	switch {
 	case len(parts) == 1 && c.Method == "GET":
+		if n := g.pending[iid]; n > 0 {
+			g.pending[iid] = n - 1
+			view := *mr
+			view.State, view.AutoMerge = "opened", true
+			return json.Marshal(&view)
+		}
 	case len(parts) == 1 && c.Method == "PUT":
 		g.update(mr, c.Fields)
 	case len(parts) == 2 && parts[1] == "cancel_merge_when_pipeline_succeeds":
@@ -119,12 +134,24 @@ func (g *GitLab) Run(args ...string) ([]byte, error) {
 		if c.Fields["merge_when_pipeline_succeeds"] == "true" || c.Fields["auto_merge"] == "true" {
 			mr.AutoMerge = true
 		}
+		if sha := c.Fields["sha"]; sha != "" && mr.SHA != "" && sha != mr.SHA {
+			return nil, fmt.Errorf("409 SHA does not match HEAD of source branch")
+		}
 		if g.OnMerge != nil {
 			if err := g.OnMerge(mr, c.Fields["squash"] == "true"); err != nil {
 				return nil, err
 			}
 		}
 		mr.State = "merged"
+		if g.PendingPolls > 0 {
+			if g.pending == nil {
+				g.pending = map[int]int{}
+			}
+			g.pending[iid] = g.PendingPolls
+			view := *mr
+			view.State, view.AutoMerge = "opened", true
+			return json.Marshal(&view)
+		}
 	default:
 		return nil, fmt.Errorf("fake: unsupported %s %s", c.Method, c.Endpoint)
 	}

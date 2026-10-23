@@ -189,6 +189,9 @@ func selectRange(s *stack.Stack, o RebaseOptions) []string {
 	return order
 }
 
+// Preflight checks that the worktrees a rebase of order would touch are clean and idle.
+func (r *Rebaser) Preflight(order []string) error { return r.preflight(order) }
+
 // preflight checks that every worktree we will touch is clean and idle.
 func (r *Rebaser) preflight(order []string) error {
 	dirs := map[string]bool{r.Repo.Dir: true}

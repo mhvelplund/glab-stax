@@ -24,6 +24,8 @@ type App struct {
 	Interactive bool // stdin and stdout are terminals
 	OutIsTTY    bool
 	Now         func() time.Time
+	// Sleep waits between GitLab polls (tests make it instant).
+	Sleep func(time.Duration)
 	// NewGitLab overrides how GitLab clients are built (tests use a fake).
 	NewGitLab func(remote string) (*glab.Client, error)
 
@@ -45,6 +47,7 @@ func NewApp() (*App, error) {
 		Interactive: outTTY && term.IsTerminal(int(os.Stdin.Fd())),
 		OutIsTTY:    outTTY,
 		Now:         time.Now,
+		Sleep:       time.Sleep,
 	}, nil
 }
 

@@ -51,6 +51,20 @@ type MR struct {
 	WebURL       string `json:"web_url"`
 	SHA          string `json:"sha"`
 	AutoMerge    bool   `json:"merge_when_pipeline_succeeds"`
+	// RemoveSource is the MR's "delete source branch" option.
+	RemoveSource bool `json:"force_remove_source_branch"`
+	// MergeStatus is GitLab's detailed_merge_status (mergeable, checking, ...).
+	MergeStatus string `json:"detailed_merge_status"`
+	MergeError  string `json:"merge_error"`
+}
+
+// Checking reports whether GitLab is still computing mergeability.
+func (m *MR) Checking() bool {
+	switch m.MergeStatus {
+	case "checking", "unchecked", "preparing", "approvals_syncing":
+		return true
+	}
+	return false
 }
 
 // Merged reports whether the MR has been merged.
@@ -166,6 +180,37 @@ func (c *Client) MarkReady(mr *MR) (*MR, error) {
 // CancelAutoMerge turns off "merge when pipeline succeeds".
 func (c *Client) CancelAutoMerge(iid int) error {
 	return c.api("POST", mrs+"/"+strconv.Itoa(iid)+"/cancel_merge_when_pipeline_succeeds", nil, nil)
+}
+
+// Merge asks GitLab to merge the MR at sha. It is requested as auto-merge, so
+// GitLab merges at once when nothing is pending, waits for the pipeline, or
+// adds the MR to a merge train. The source branch is kept; callers delete it
+// once dependent MRs are retargeted.
+func (c *Client) Merge(iid int, squash bool, sha string) (*MR, error) {
+	var mr MR
+	err := c.api("PUT", mrs+"/"+strconv.Itoa(iid)+"/merge", map[string]any{
+		"squash": squash, "sha": sha, "should_remove_source_branch": false,
+		"auto_merge": true, "merge_when_pipeline_succeeds": true,
+	}, &mr)
+	if err != nil {
+		return nil, err
+	}
+	return &mr, nil
+}
+
+// ProjectInfo is the subset of project settings glab-stax uses.
+type ProjectInfo struct {
+	SquashOption string `json:"squash_option"` // never, always, default_on, default_off
+	MergeMethod  string `json:"merge_method"`  // merge, rebase_merge, ff
+}
+
+// GetProject fetches project settings.
+func (c *Client) GetProject() (*ProjectInfo, error) {
+	var p ProjectInfo
+	if err := c.api("GET", "projects/:project", nil, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // StripDraft removes GitLab draft prefixes from a title.

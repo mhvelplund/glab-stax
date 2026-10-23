@@ -29,6 +29,7 @@ func NewRoot(app *App) *cobra.Command {
 		newPushCmd(app),
 		newSubmitCmd(app),
 		newSyncCmd(app),
+		newMergeCmd(app),
 	)
 	root.AddCommand(newNavCmds(app)...)
 	wrapArgs(root)

@@ -18,6 +18,18 @@ type harness struct {
 	gl   *glabtest.GitLab
 	// runner, when set, replaces the fake's glab runner (e.g. to inject failures).
 	runner glab.Runner
+	// clock advances by tick on every Now() call when tick > 0.
+	clock time.Time
+	tick  time.Duration
+	slept time.Duration
+}
+
+func (h *harness) now() time.Time {
+	if h.clock.IsZero() {
+		h.clock = time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
+	}
+	h.clock = h.clock.Add(h.tick)
+	return h.clock
 }
 
 func newHarness(t *testing.T) *harness {
@@ -40,7 +52,8 @@ func (h *harness) runIn(dir, stdin string, interactive bool, args ...string) res
 	app := &App{
 		Dir: dir, In: strings.NewReader(stdin), Out: &out, Err: &errb,
 		Interactive: interactive,
-		Now:         func() time.Time { return time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC) },
+		Now:         h.now,
+		Sleep:       func(d time.Duration) { h.slept += d },
 		NewGitLab: func(string) (*glab.Client, error) {
 			c := h.gl.Client()
 			if h.runner != nil {

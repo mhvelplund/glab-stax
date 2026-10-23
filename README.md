@@ -27,10 +27,11 @@ Work in progress. Available today:
 | `push` | Push all unmerged branches with `--force-with-lease` (`--remote`) |
 | `submit` | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`) |
 | `sync` | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`) |
+| `merge [<mr>]` | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`) |
 | `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
 
 Planned, following gh-stack v0.2.1: `link`,
-`merge`, `checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
+`checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
 
 ## Requirements
 
@@ -90,6 +91,13 @@ If a rebase hits a conflict, resolve it, `git add` the files and run
 
 Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never
 committed.
+
+### Differences from gh-stack
+
+- GitLab has no stack object, so the stack is recorded in a managed block at
+  the end of each MR description.
+- `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the
+  command stops at the first failure, leaving earlier MRs merged.
 
 ### Exit codes
 
