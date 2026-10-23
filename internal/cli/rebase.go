@@ -77,6 +77,10 @@ func (a *App) runRebase(fl rebaseFlags) error {
 		if len(s.Branches) == 0 {
 			return exitcode.New(exitcode.NotInStack, "the stack has no branches")
 		}
+		// Best effort: learn which layers were merged so they are skipped.
+		if c, err := a.gitlab(pickRemote(fl.opts.Remote, s.Remote)); err == nil {
+			_, _ = engine.SyncMRs(c, s)
+		}
 		if err := a.repo().EnableRerere(); err != nil {
 			return err
 		}

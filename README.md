@@ -24,9 +24,11 @@ Work in progress. Available today:
 | `add [branch]` | Add a layer on top (`-m`, `-A`, `-u`) |
 | `view` | Show the stack (`--short`, `--json`) |
 | `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`) |
+| `push` | Push all unmerged branches with `--force-with-lease` (`--remote`) |
+| `submit` | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`) |
 | `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
 
-Planned, following gh-stack v0.2.1: `sync`, `push`, `submit`, `link`,
+Planned, following gh-stack v0.2.1: `sync`, `link`,
 `merge`, `checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
 
 ## Requirements
@@ -72,7 +74,13 @@ glab stax view                     # show the stack
 glab stax down                     # move toward the trunk
 git commit --amend                 # rewrite a lower layer...
 glab stax rebase                   # ...and restack everything above it
+glab stax submit                   # push and open one MR per layer
 ```
+
+`glab stax submit --auto` creates draft MRs titled from the commits; without
+`--auto` you are prompted for titles. Every MR gets a block at the end of its
+description that lists the whole stack, so reviewers can move between layers.
+glab-stax keeps that block up to date; text outside it is never touched.
 
 If a rebase hits a conflict, resolve it, `git add` the files and run
 `glab stax rebase --continue`, or undo the whole operation with

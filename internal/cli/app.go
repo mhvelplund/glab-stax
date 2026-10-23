@@ -12,6 +12,7 @@ import (
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/git"
+	"github.com/mhvelplund/glab-stax/internal/glab"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
 
@@ -23,6 +24,8 @@ type App struct {
 	Interactive bool // stdin and stdout are terminals
 	OutIsTTY    bool
 	Now         func() time.Time
+	// NewGitLab overrides how GitLab clients are built (tests use a fake).
+	NewGitLab func(remote string) (*glab.Client, error)
 
 	in *bufio.Reader
 }

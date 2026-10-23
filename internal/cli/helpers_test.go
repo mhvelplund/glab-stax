@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mhvelplund/glab-stax/internal/glab"
+	"github.com/mhvelplund/glab-stax/internal/glab/glabtest"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 	"github.com/mhvelplund/glab-stax/internal/testutil"
 )
@@ -13,12 +15,15 @@ import (
 type harness struct {
 	t    *testing.T
 	repo *testutil.Repo
+	gl   *glabtest.GitLab
+	// runner, when set, replaces the fake's glab runner (e.g. to inject failures).
+	runner glab.Runner
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	t.Setenv("GLAB_STAX_HYPERLINKS", "0")
-	return &harness{t: t, repo: testutil.NewRepo(t)}
+	return &harness{t: t, repo: testutil.NewRepo(t), gl: glabtest.New()}
 }
 
 type result struct {
@@ -36,6 +41,13 @@ func (h *harness) runIn(dir, stdin string, interactive bool, args ...string) res
 		Dir: dir, In: strings.NewReader(stdin), Out: &out, Err: &errb,
 		Interactive: interactive,
 		Now:         func() time.Time { return time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC) },
+		NewGitLab: func(string) (*glab.Client, error) {
+			c := h.gl.Client()
+			if h.runner != nil {
+				c.Run = h.runner
+			}
+			return c, nil
+		},
 	}
 	e := Execute(app, args)
 	return result{out: out.String(), err: errb.String(), e: e}
