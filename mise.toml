@@ -1,0 +1,20 @@
+[tools]
+go = "1.25"
+golangci-lint = "2"
+glab = "latest"
+
+[tasks.build]
+description = "Build the glab-stax binary"
+run = "go build -o bin/glab-stax ./cmd/glab-stax"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run go vet and golangci-lint"
+run = ["go vet ./...", "golangci-lint run ./..."]
+
+[tasks.check]
+description = "Build, lint and test"
+depends = ["build", "lint", "test"]
