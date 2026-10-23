@@ -7,15 +7,15 @@ import (
 )
 
 const (
-	OK              = 0
-	Generic         = 1
-	NotInStack      = 2
-	RebaseConflict  = 3
-	GitLabFailure   = 4
-	InvalidArgs     = 5
-	Ambiguous       = 6
-	RebaseInProgress= 7
-	Locked          = 8
+	OK               = 0
+	Generic          = 1
+	NotInStack       = 2
+	RebaseConflict   = 3
+	GitLabFailure    = 4
+	InvalidArgs      = 5
+	Ambiguous        = 6
+	RebaseInProgress = 7
+	Locked           = 8
 )
 
 // Error carries an exit code alongside an error.

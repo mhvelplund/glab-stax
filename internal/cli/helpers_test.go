@@ -1,0 +1,72 @@
+package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/testutil"
+)
+
+type harness struct {
+	t    *testing.T
+	repo *testutil.Repo
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	t.Setenv("GLAB_STAX_HYPERLINKS", "0")
+	return &harness{t: t, repo: testutil.NewRepo(t)}
+}
+
+type result struct {
+	out, err string
+	e        error
+}
+
+// run executes a command non-interactively in dir (default: the main clone).
+func (h *harness) run(args ...string) result { return h.runIn(h.repo.Dir, "", false, args...) }
+
+func (h *harness) runIn(dir, stdin string, interactive bool, args ...string) result {
+	h.t.Helper()
+	var out, errb bytes.Buffer
+	app := &App{
+		Dir: dir, In: strings.NewReader(stdin), Out: &out, Err: &errb,
+		Interactive: interactive,
+		Now:         func() time.Time { return time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC) },
+	}
+	e := Execute(app, args)
+	return result{out: out.String(), err: errb.String(), e: e}
+}
+
+func (h *harness) must(args ...string) result {
+	h.t.Helper()
+	r := h.run(args...)
+	if r.e != nil {
+		h.t.Fatalf("%v: %v\nstderr: %s", args, r.e, r.err)
+	}
+	return r
+}
+
+func (h *harness) current() string {
+	return h.repo.Git("rev-parse", "--abbrev-ref", "HEAD")
+}
+
+func (h *harness) file() *stack.File {
+	h.t.Helper()
+	f, err := stack.Store{Dir: h.repo.Dir + "/.git"}.Load()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return f
+}
+
+func names(s *stack.Stack) []string {
+	var out []string
+	for _, b := range s.Branches {
+		out = append(out, b.Name)
+	}
+	return out
+}

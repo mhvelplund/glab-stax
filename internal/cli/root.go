@@ -9,7 +9,7 @@ import (
 var Version = "dev"
 
 // NewRoot builds the root command.
-func NewRoot() *cobra.Command {
+func NewRoot(app *App) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "glab-stax",
 		Short:         "Stacked merge requests for GitLab, gh-stack style",
@@ -19,5 +19,14 @@ func NewRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.SetFlagErrorFunc(flagError)
+	root.SetOut(app.Out)
+	root.SetErr(app.Err)
+	root.AddCommand(
+		newInitCmd(app),
+		newAddCmd(app),
+		newViewCmd(app),
+	)
+	root.AddCommand(newNavCmds(app)...)
+	wrapArgs(root)
 	return root
 }

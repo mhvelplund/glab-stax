@@ -3,21 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/mhvelplund/glab-stax/internal/cli"
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
 
 func main() {
-	err := cli.NewRoot().Execute()
+	app, err := cli.NewApp()
+	if err == nil {
+		err = cli.Execute(app, os.Args[1:])
+	}
 	if err != nil {
-		code := exitcode.Of(err)
-		// Cobra reports unknown commands and bad args as plain errors.
-		if code == exitcode.Generic && strings.HasPrefix(err.Error(), "unknown command") {
-			code = exitcode.InvalidArgs
-		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(code)
+		os.Exit(exitcode.Of(err))
 	}
 }

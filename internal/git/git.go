@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Repo runs git commands in Dir.
@@ -269,4 +271,28 @@ func (r *Repo) ConflictedFiles() ([]string, error) {
 		return nil, err
 	}
 	return strings.Split(out, "\n"), nil
+}
+
+// Commit is a one-line summary of a commit.
+type Commit struct {
+	SHA     string
+	Subject string
+	Time    time.Time
+}
+
+// LastCommit returns the tip commit of rev.
+func (r *Repo) LastCommit(rev string) (Commit, error) {
+	out, err := r.Run("log", "-1", "--format=%H%x00%ct%x00%s", rev)
+	if err != nil {
+		return Commit{}, err
+	}
+	parts := strings.SplitN(out, "\x00", 3)
+	if len(parts) != 3 {
+		return Commit{}, fmt.Errorf("unexpected git log output %q", out)
+	}
+	secs, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return Commit{}, err
+	}
+	return Commit{SHA: parts[0], Subject: parts[2], Time: time.Unix(secs, 0)}, nil
 }
