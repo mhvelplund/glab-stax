@@ -296,3 +296,9 @@ func (r *Repo) LastCommit(rev string) (Commit, error) {
 	}
 	return Commit{SHA: parts[0], Subject: parts[2], Time: time.Unix(secs, 0)}, nil
 }
+
+// ValidBranchName reports whether name is an acceptable branch name.
+func (r *Repo) ValidBranchName(name string) bool {
+	_, err := r.Run("check-ref-format", "--branch", name)
+	return err == nil && !strings.HasPrefix(name, "-")
+}

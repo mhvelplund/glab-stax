@@ -165,3 +165,17 @@ func TestAddOutsideStack(t *testing.T) {
 		t.Fatalf("stack = %+v, current %s", s, h.current())
 	}
 }
+
+func TestInvalidBranchNameCreatesNothing(t *testing.T) {
+	h := newHarness(t)
+	if got := exitcode.Of(h.run("init", "ok", "b c").e); got != exitcode.InvalidArgs {
+		t.Fatalf("init: exit %d", got)
+	}
+	if h.repo.Git("branch", "--list", "ok") != "" {
+		t.Fatal("init left branch ok behind")
+	}
+	h.must("init", "a")
+	if got := exitcode.Of(h.run("add", "bad..name").e); got != exitcode.InvalidArgs {
+		t.Fatalf("add: exit %d", got)
+	}
+}

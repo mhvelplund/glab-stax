@@ -59,7 +59,7 @@ func (a *App) runInit(base string, names []string) error {
 				return exitcode.New(exitcode.InvalidArgs, "a stack needs at least one branch")
 			}
 		}
-		if err := validateNewBranches(f, trunk, names); err != nil {
+		if err := a.validateNewBranches(f, trunk, names); err != nil {
 			return err
 		}
 		s := &stack.Stack{Trunk: trunk, Remote: remote}
@@ -134,10 +134,12 @@ func (a *App) promptInitNames(f *stack.File, cur, trunk string) ([]string, error
 	}
 }
 
-func validateNewBranches(f *stack.File, trunk string, names []string) error {
+func (a *App) validateNewBranches(f *stack.File, trunk string, names []string) error {
 	seen := map[string]bool{}
 	for _, n := range names {
 		switch {
+		case !a.repo().ValidBranchName(n):
+			return exitcode.New(exitcode.InvalidArgs, "%q is not a valid branch name", n)
 		case n == trunk:
 			return exitcode.New(exitcode.InvalidArgs, "%q is the trunk and cannot be a layer", n)
 		case seen[n]:

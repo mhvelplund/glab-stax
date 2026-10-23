@@ -99,7 +99,7 @@ func (a *App) runAdd(o addOptions, name string) error {
 				return exitcode.New(exitcode.InvalidArgs, "branch name required")
 			}
 		}
-		if err := validateNewBranches(f, s.Trunk, []string{name}); err != nil {
+		if err := a.validateNewBranches(f, s.Trunk, []string{name}); err != nil {
 			return err
 		}
 		owner, err := a.foreignOwner(name)
