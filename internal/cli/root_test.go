@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
 
 func TestBadFlagIsInvalidArgs(t *testing.T) {

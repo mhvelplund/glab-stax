@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"glab-stax/internal/git"
-	"glab-stax/internal/testutil"
+	"github.com/mhvelplund/glab-stax/internal/git"
+	"github.com/mhvelplund/glab-stax/internal/testutil"
 )
 
 func TestBasics(t *testing.T) {

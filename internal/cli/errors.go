@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
 
 func flagError(_ *cobra.Command, err error) error {

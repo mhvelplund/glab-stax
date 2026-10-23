@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"glab-stax/internal/cli"
-	"glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/cli"
+	"github.com/mhvelplund/glab-stax/internal/exitcode"
 )
 
 func main() {

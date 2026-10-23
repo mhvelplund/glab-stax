@@ -1,6 +1,6 @@
-module glab-stax
+module github.com/mhvelplund/glab-stax
 
-go 1.25.14
+go 1.26.0
 
 require github.com/spf13/cobra v1.10.2
 
