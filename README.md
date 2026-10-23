@@ -28,11 +28,12 @@ Work in progress. Available today:
 | `merge [<mr>]`                                 | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`)                                       |
 | `switch`                                       | Pick a branch of the current stack in a full-screen picker (`--print-path`)                                                                                                                        |
 | `checkout [<mr> \| <url> \| <branch>]`         | Check out a stack, setting it up from GitLab if needed; without arguments, pick from local and GitLab stacks (`--print-path`)                                                                      |
+| `modify`                                       | Restructure the stack in a full-screen editor: drop, fold, insert, reorder, rename, undo (`--continue`, `--abort`)                                                                                 |
 | `link <branch-or-mr>...`                       | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`)                                                                                                         |
 | `unstack [<mr>]`                               | Remove a stack locally and its block on GitLab (`--local`; alias `delete`)                                                                                                                         |
 | `rebase [branch]`                              | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`)                                                        |
 
-Planned, following gh-stack v0.2.1: `modify`, `alias`, `feedback`.
+Planned, following gh-stack v0.2.1: `alias`, `feedback`.
 
 ## Requirements
 
@@ -94,6 +95,8 @@ Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never 
 ### Differences from gh-stack
 
 - GitLab has no stack object, so the stack is recorded in a managed block at the end of each MR description.
+- Renaming a layer in `modify` cannot rename its MR's source branch on GitLab, so the next `submit` opens a new MR;
+  close the old one.
 - `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the command stops at the first failure, leaving
   earlier MRs merged.
 

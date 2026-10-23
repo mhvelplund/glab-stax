@@ -40,6 +40,8 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyShiftDown}
 	case "shift+up":
 		return tea.KeyMsg{Type: tea.KeyShiftUp}
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }

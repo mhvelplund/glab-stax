@@ -3,6 +3,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
@@ -432,4 +433,9 @@ func short(ref string) string {
 		return ref[:7]
 	}
 	return ref
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
