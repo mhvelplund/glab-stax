@@ -140,6 +140,13 @@ func (c *Client) SearchMRs(text string) ([]*MR, error) {
 	return list, err
 }
 
+// ListMRsTargeting returns open MRs whose target branch is branch.
+func (c *Client) ListMRsTargeting(branch string) ([]*MR, error) {
+	var list []*MR
+	err := c.api("GET", mrs, map[string]any{"target_branch": branch, "state": "opened", "per_page": 100}, &list)
+	return list, err
+}
+
 // NewMR describes a merge request to create.
 type NewMR struct {
 	Source, Target, Title, Description string

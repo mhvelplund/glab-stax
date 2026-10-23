@@ -170,6 +170,9 @@ func (g *GitLab) list(f map[string]string) []*glab.MR {
 		if v := f["source_branch"]; v != "" && mr.SourceBranch != v {
 			continue
 		}
+		if v := f["target_branch"]; v != "" && mr.TargetBranch != v {
+			continue
+		}
 		if v := f["state"]; v != "" && v != "all" && mr.State != v {
 			continue
 		}

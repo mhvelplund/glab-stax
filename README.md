@@ -28,10 +28,13 @@ Work in progress. Available today:
 | `submit` | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`) |
 | `sync` | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`) |
 | `merge [<mr>]` | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`) |
+| `checkout [<mr> \| <url> \| <branch>]` | Check out a stack, setting it up from GitLab if needed (`--print-path`) |
+| `link <branch-or-mr>...` | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`) |
+| `unstack [<mr>]` | Remove a stack locally and its block on GitLab (`--local`; alias `delete`) |
 | `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
 
-Planned, following gh-stack v0.2.1: `link`,
-`checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
+Planned, following gh-stack v0.2.1: `switch`, `modify`, `alias`, `feedback`,
+and full-screen editors for `submit` and the `checkout` picker.
 
 ## Requirements
 

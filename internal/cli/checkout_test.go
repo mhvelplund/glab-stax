@@ -1,0 +1,183 @@
+package cli
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/mhvelplund/glab-stax/internal/exitcode"
+	"github.com/mhvelplund/glab-stax/internal/glab"
+	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/testutil"
+)
+
+// teammate returns a fresh clone sharing h's fake GitLab.
+func (h *harness) teammate() *testutil.Repo { return h.repo.Clone() }
+
+func (h *harness) in(r *testutil.Repo, stdin string, interactive bool, args ...string) result {
+	h.t.Helper()
+	return h.runIn(r.Dir, stdin, interactive, args...)
+}
+
+func stacksIn(t *testing.T, r *testutil.Repo) *stack.File {
+	t.Helper()
+	f, err := stack.Store{Dir: r.Dir + "/.git"}.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestCheckoutRemoteStackByMR(t *testing.T) {
+	h := submitted(t)
+	tm := h.teammate()
+
+	for _, arg := range []string{"2", "!2", "https://gitlab.example/group/repo/-/merge_requests/2"} {
+		r := h.in(tm, "", false, "checkout", arg)
+		if r.e != nil {
+			t.Fatalf("checkout %s: %v\n%s", arg, r.e, r.err)
+		}
+		if cur := tm.Git("branch", "--show-current"); cur != "b" {
+			t.Fatalf("checkout %s: on %s", arg, cur)
+		}
+	}
+	f := stacksIn(t, tm)
+	if len(f.Stacks) != 1 || len(f.Stacks[0].Branches) != 3 || f.Stacks[0].Branches[2].MR.IID != 3 {
+		t.Fatalf("stacks = %+v", f.Stacks)
+	}
+	if tm.Git("rev-parse", "c") != h.sha("c") {
+		t.Fatal("c not created from the remote")
+	}
+	// The set-up stack is fully usable.
+	h.in(tm, "", false, "top")
+	if tm.Git("branch", "--show-current") != "c" {
+		t.Fatal("navigation broken in checked-out stack")
+	}
+}
+
+func TestCheckoutByBranchName(t *testing.T) {
+	h := submitted(t)
+	tm := h.teammate()
+	if r := h.in(tm, "", false, "checkout", "c"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if tm.Git("branch", "--show-current") != "c" || len(stacksIn(t, tm).Stacks) != 1 {
+		t.Fatal("stack not set up from branch name")
+	}
+	if got := exitcode.Of(h.in(tm, "", false, "checkout", "nope").e); got != exitcode.NotInStack {
+		t.Fatalf("unknown branch: exit %d", got)
+	}
+}
+
+func TestCheckoutInfersStackWithoutBlock(t *testing.T) {
+	h := threeLayers(t)
+	h.must("push")
+	h.gl.Add(glab.MR{IID: 1, SourceBranch: "a", TargetBranch: "main"})
+	h.gl.Add(glab.MR{IID: 2, SourceBranch: "b", TargetBranch: "a"})
+	h.gl.Add(glab.MR{IID: 3, SourceBranch: "c", TargetBranch: "b"})
+	tm := h.teammate()
+	if r := h.in(tm, "", false, "checkout", "2"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	s := stacksIn(t, tm).Stacks[0]
+	if got := names(s); len(got) != 3 || got[0] != "a" || got[2] != "c" || s.Trunk != "main" {
+		t.Fatalf("inferred %v on %s", got, s.Trunk)
+	}
+}
+
+func TestCheckoutLocalAndPicker(t *testing.T) {
+	h := submitted(t)
+	h.must("checkout", "1")
+	if h.current() != "a" {
+		t.Fatalf("on %s", h.current())
+	}
+	if got := exitcode.Of(h.run("checkout").e); got != exitcode.InvalidArgs {
+		t.Fatalf("no args non-interactive: exit %d", got)
+	}
+	tm := h.teammate()
+	r := h.in(tm, "1\n", true, "checkout")
+	if r.e != nil || !strings.Contains(r.err, "remote  main ← !1 a ← !2 b ← !3 c") {
+		t.Fatalf("%v\n%s", r.e, r.err)
+	}
+	if tm.Git("branch", "--show-current") != "c" {
+		t.Fatal("picker did not check out the stack's top")
+	}
+}
+
+func TestUnstack(t *testing.T) {
+	h := submitted(t)
+	h.must("unstack", "--local")
+	if len(h.file().Stacks) != 0 {
+		t.Fatal("local tracking kept")
+	}
+	if _, ok := glab.ParseBlock(h.gl.MRs[1].Description); !ok {
+		t.Fatal("--local touched GitLab")
+	}
+
+	// From a clone that never tracked it, by MR number.
+	tm := h.teammate()
+	if r := h.in(tm, "", false, "delete", "2"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	for iid, mr := range h.gl.MRs {
+		if _, ok := glab.ParseBlock(mr.Description); ok {
+			t.Errorf("!%d still has a block", iid)
+		}
+	}
+}
+
+func TestUnstackCurrent(t *testing.T) {
+	h := submitted(t)
+	h.must("unstack")
+	if len(h.file().Stacks) != 0 || strings.Contains(h.gl.MRs[3].Description, glab.Marker) {
+		t.Fatal("unstack incomplete")
+	}
+}
+
+func TestLinkCreatesAndExtends(t *testing.T) {
+	h := newHarness(t)
+	h.repo.Git("checkout", "--quiet", "-b", "x")
+	h.repo.Commit("x.txt", "x\n", "x1")
+	h.repo.Git("checkout", "--quiet", "-b", "y")
+	h.repo.Commit("y.txt", "y\n", "y1")
+
+	h.must("link", "x", "y")
+	if h.gl.MRs[1].TargetBranch != "main" || h.gl.MRs[2].TargetBranch != "x" {
+		t.Fatalf("targets: %s, %s", h.gl.MRs[1].TargetBranch, h.gl.MRs[2].TargetBranch)
+	}
+	if len(h.file().Stacks) != 0 {
+		t.Fatal("link changed local tracking")
+	}
+
+	// Insert z between x and y, by MR number for x: additive, order kept.
+	h.repo.Git("checkout", "--quiet", "-b", "z", "x")
+	h.repo.Commit("z.txt", "z\n", "z1")
+	h.must("link", "1", "z")
+	info, _ := glab.ParseBlock(h.gl.MRs[2].Description)
+	var order []string
+	for _, m := range info.MRs {
+		order = append(order, m.Branch)
+	}
+	if strings.Join(order, ",") != "x,z,y" {
+		t.Fatalf("order = %v", order)
+	}
+	if h.gl.MRs[3].TargetBranch != "x" {
+		t.Fatalf("z targets %s", h.gl.MRs[3].TargetBranch)
+	}
+	if got := exitcode.Of(h.run("link", "no-such").e); got != exitcode.InvalidArgs {
+		t.Fatalf("bad arg: exit %d", got)
+	}
+}
+
+func TestMergeRemoteOnlyStack(t *testing.T) {
+	h := mergeable(t)
+	tm := h.teammate()
+	if r := h.in(tm, "", false, "merge", "1", "--yes", "--squash"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if !h.gl.MRs[1].Merged() || h.gl.MRs[2].Merged() {
+		t.Fatal("wrong MRs merged")
+	}
+	if tm.Git("branch", "--show-current") != "main" {
+		t.Fatal("merge switched branches")
+	}
+}

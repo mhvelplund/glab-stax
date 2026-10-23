@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -152,18 +151,28 @@ func (a *App) mergeTarget(f *stack.File, args []string) (*stack.Stack, int, erro
 		s, _, err := a.currentStack(f)
 		return s, 0, err
 	}
-	iid, err := strconv.Atoi(strings.TrimPrefix(args[0], "!"))
-	if err != nil {
+	iid, ok := parseMRRef(args[0])
+	if !ok {
 		return nil, 0, exitcode.New(exitcode.InvalidArgs, "expected an MR number, got %q", args[0])
 	}
-	for _, s := range f.Stacks {
-		for _, b := range s.Branches {
-			if b.MR != nil && b.MR.IID == iid {
-				return s, iid, nil
-			}
-		}
+	if s, _ := findLocalMR(f, iid); s != nil {
+		return s, iid, nil
 	}
-	return nil, 0, exitcode.New(exitcode.NotInStack, "!%d is not part of a local stack; check it out first with `glab stax checkout %d`", iid, iid)
+	// A stack that is only on GitLab: set it up locally without switching branches.
+	c, err := a.gitlab(a.defaultRemote())
+	if err != nil {
+		return nil, 0, err
+	}
+	mr, err := c.GetMR(iid)
+	if err != nil {
+		return nil, 0, exitcode.Wrap(exitcode.NotInStack, fmt.Errorf("!%d: %w", iid, err))
+	}
+	info, err := remoteStackFor(c, mr)
+	if err != nil {
+		return nil, 0, err
+	}
+	s, err := a.setupRemoteStack(f, c, info, a.defaultRemote())
+	return s, iid, err
 }
 
 // mergeCandidates returns the unmerged layers from the bottom up to targetIID
