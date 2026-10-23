@@ -8,12 +8,14 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/glab"
 	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 // App is the environment commands run in. Tests construct it directly.
@@ -26,6 +28,8 @@ type App struct {
 	Now         func() time.Time
 	// Sleep waits between GitLab polls (tests make it instant).
 	Sleep func(time.Duration)
+	// RunTUI runs a full-screen editor (tests drive it with scripted keys).
+	RunTUI func(m tea.Model) (tea.Model, error)
 	// NewGitLab overrides how GitLab clients are built (tests use a fake).
 	NewGitLab func(remote string) (*glab.Client, error)
 
@@ -49,6 +53,14 @@ func NewApp() (*App, error) {
 		Now:         time.Now,
 		Sleep:       time.Sleep,
 	}, nil
+}
+
+// runTUI runs m on the terminal, drawing on stderr so stdout stays clean.
+func (a *App) runTUI(m tea.Model) (tea.Model, error) {
+	if a.RunTUI != nil {
+		return a.RunTUI(m)
+	}
+	return tui.Run(m, a.In, a.Err)
 }
 
 func (a *App) repo() *git.Repo { return &git.Repo{Dir: a.Dir} }

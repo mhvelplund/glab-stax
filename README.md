@@ -1,40 +1,36 @@
 # glab stax
 
-Stacked merge requests for GitLab, where each layer of the stack is a branch
-that can hold **any number of commits**.
+Stacked merge requests for GitLab, where each layer of the stack is a branch that can hold **any number of commits**.
 
-`glab stax` is a **derivative work of [gh-stack](https://github.com/github/gh-stack)**
-by GitHub, Inc., released under the MIT License. It reproduces the command-line
-interface of **gh-stack v0.2.1** but targets GitLab: branches and rebases are
-handled with plain `git`, and merge requests are managed through
-[`glab`](https://gitlab.com/gitlab-org/cli). It is not affiliated with or
-endorsed by GitHub or GitLab.
+`glab stax` is a **derivative work of [gh-stack](https://github.com/github/gh-stack)** by GitHub, Inc., released under
+the MIT License. It reproduces the command-line interface of **gh-stack v0.2.1** but targets GitLab: branches and
+rebases are handled with plain `git`, and merge requests are managed through
+[`glab`](https://gitlab.com/gitlab-org/cli). It is not affiliated with or endorsed by GitHub or GitLab.
 
-Unlike the experimental built-in `glab stack`, which allows only one commit per
-merge request, `glab stax` follows gh-stack's multi-commit model. It does not
-use GitLab's stacked diffs UI.
+Unlike the experimental built-in `glab stack`, which allows only one commit per merge request, `glab stax` follows
+gh-stack's multi-commit model. It does not use GitLab's stacked diffs UI.
 
 ## Status
 
 Work in progress. Available today:
 
-| Command | Description |
-|---|---|
-| `init [branches...]` | Start a stack (`-b/--base` sets the trunk) |
-| `add [branch]` | Add a layer on top (`-m`, `-A`, `-u`) |
-| `view` | Show the stack (`--short`, `--json`) |
-| `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`) |
-| `push` | Push all unmerged branches with `--force-with-lease` (`--remote`) |
-| `submit` | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`) |
-| `sync` | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`) |
-| `merge [<mr>]` | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`) |
-| `checkout [<mr> \| <url> \| <branch>]` | Check out a stack, setting it up from GitLab if needed (`--print-path`) |
-| `link <branch-or-mr>...` | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`) |
-| `unstack [<mr>]` | Remove a stack locally and its block on GitLab (`--local`; alias `delete`) |
-| `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
+| Command                                        | Description                                                                                                                                                  |
+|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `init [branches...]`                           | Start a stack (`-b/--base` sets the trunk)                                                                                                                   |
+| `add [branch]`                                 | Add a layer on top (`-m`, `-A`, `-u`)                                                                                                                        |
+| `view`                                         | Show the stack (`--short`, `--json`)                                                                                                                         |
+| `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`)                                                                                                                          |
+| `push`                                         | Push all unmerged branches with `--force-with-lease` (`--remote`)                                                                                            |
+| `submit`                                       | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`)                                                   |
+| `sync`                                         | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`)                                             |
+| `merge [<mr>]`                                 | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`) |
+| `switch`                                       | Pick a branch of the current stack in a full-screen picker (`--print-path`)                                                                                  |
+| `checkout [<mr> \| <url> \| <branch>]`         | Check out a stack, setting it up from GitLab if needed; without arguments, pick from local and GitLab stacks (`--print-path`)                                |
+| `link <branch-or-mr>...`                       | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`)                                                                   |
+| `unstack [<mr>]`                               | Remove a stack locally and its block on GitLab (`--local`; alias `delete`)                                                                                   |
+| `rebase [branch]`                              | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`)                  |
 
-Planned, following gh-stack v0.2.1: `switch`, `modify`, `alias`, `feedback`,
-and full-screen editors for `submit` and the `checkout` picker.
+Planned, following gh-stack v0.2.1: `modify`, `alias`, `feedback`, and a full-screen editor for `submit`.
 
 ## Requirements
 
@@ -43,8 +39,8 @@ and full-screen editors for `submit` and the `checkout` picker.
 
 ## Installation
 
-`glab` has no extension mechanism like `gh extension`. Instead, install the
-`glab-stax` binary and register a `glab` alias so that it runs as `glab stax`.
+`glab` has no extension mechanism like `gh extension`. Instead, install the `glab-stax` binary and register a `glab`
+alias so that it runs as `glab stax`.
 
 1. Install the binary (requires Go, see [Development](#development)):
 
@@ -66,8 +62,8 @@ and full-screen editors for `submit` and the `checkout` picker.
    glab stax --help
    ```
 
-The name `stax` avoids a clash with the built-in `glab stack` command.
-You can also run the binary directly as `glab-stax`.
+The name `stax` avoids a clash with the built-in `glab stack` command. You can also run the binary directly as
+`glab-stax`.
 
 ## Usage
 
@@ -83,43 +79,38 @@ glab stax submit                   # push and open one MR per layer
 glab stax sync --prune             # after the bottom MR merges: restack, retarget, clean up
 ```
 
-`glab stax submit --auto` creates draft MRs titled from the commits; without
-`--auto` you are prompted for titles. Every MR gets a block at the end of its
-description that lists the whole stack, so reviewers can move between layers.
+`glab stax submit --auto` creates draft MRs titled from the commits; without `--auto` you are prompted for titles. Every
+MR gets a block at the end of its description that lists the whole stack, so reviewers can move between layers.
 glab-stax keeps that block up to date; text outside it is never touched.
 
-If a rebase hits a conflict, resolve it, `git add` the files and run
-`glab stax rebase --continue`, or undo the whole operation with
-`glab stax rebase --abort`.
+If a rebase hits a conflict, resolve it, `git add` the files and run `glab stax rebase --continue`, or undo the whole
+operation with `glab stax rebase --abort`.
 
-Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never
-committed.
+Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never committed.
 
 ### Differences from gh-stack
 
-- GitLab has no stack object, so the stack is recorded in a managed block at
-  the end of each MR description.
-- `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the
-  command stops at the first failure, leaving earlier MRs merged.
+- GitLab has no stack object, so the stack is recorded in a managed block at the end of each MR description.
+- `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the command stops at the first failure, leaving
+  earlier MRs merged.
 
 ### Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | Generic error |
-| 2 | Not in a stack / stack not found |
-| 3 | Rebase conflict |
-| 4 | GitLab (`glab`) failure |
-| 5 | Invalid arguments or flags |
-| 6 | Disambiguation required |
-| 7 | Rebase already in progress |
-| 8 | Stack locked by another process |
+| Code | Meaning                          |
+|------|----------------------------------|
+| 0    | Success                          |
+| 1    | Generic error                    |
+| 2    | Not in a stack / stack not found |
+| 3    | Rebase conflict                  |
+| 4    | GitLab (`glab`) failure          |
+| 5    | Invalid arguments or flags       |
+| 6    | Disambiguation required          |
+| 7    | Rebase already in progress       |
+| 8    | Stack locked by another process  |
 
 ## Development
 
-All development tools (Go, golangci-lint, glab) are managed with
-[mise](https://mise.jdx.dev) and pinned in `mise.toml`.
+All development tools (Go, golangci-lint, glab) are managed with [mise](https://mise.jdx.dev) and pinned in `mise.toml`.
 
 ```sh
 mise install       # install the toolchain
@@ -131,5 +122,4 @@ mise run check     # all of the above
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Contains work derived from gh-stack,
-Copyright GitHub, Inc.
+MIT. See [LICENSE](LICENSE). Contains work derived from gh-stack, Copyright GitHub, Inc.

@@ -31,6 +31,7 @@ func NewRoot(app *App) *cobra.Command {
 		newSyncCmd(app),
 		newMergeCmd(app),
 		newCheckoutCmd(app),
+		newSwitchCmd(app),
 		newLinkCmd(app),
 		newUnstackCmd(app),
 	)

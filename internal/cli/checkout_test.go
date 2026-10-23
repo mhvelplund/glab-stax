@@ -94,8 +94,9 @@ func TestCheckoutLocalAndPicker(t *testing.T) {
 		t.Fatalf("no args non-interactive: exit %d", got)
 	}
 	tm := h.teammate()
-	r := h.in(tm, "1\n", true, "checkout")
-	if r.e != nil || !strings.Contains(r.err, "remote  main ← !1 a ← !2 b ← !3 c") {
+	h.keys = []string{"tab", "tab", "enter"} // Remote tab, first stack
+	r := h.in(tm, "", true, "checkout")
+	if r.e != nil {
 		t.Fatalf("%v\n%s", r.e, r.err)
 	}
 	if tm.Git("branch", "--show-current") != "c" {
@@ -179,5 +180,30 @@ func TestMergeRemoteOnlyStack(t *testing.T) {
 	}
 	if tm.Git("branch", "--show-current") != "main" {
 		t.Fatal("merge switched branches")
+	}
+}
+
+func TestSwitch(t *testing.T) {
+	h := threeLayers(t)
+	if got := exitcode.Of(h.run("switch").e); got != exitcode.InvalidArgs {
+		t.Fatalf("non-interactive: exit %d", got)
+	}
+	// List: 3. c (current), 2. b, 1. a, main. Two down lands on a.
+	h.keys = []string{"j", "j", "enter"}
+	if r := h.runIn(h.repo.Dir, "", true, "switch"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if h.current() != "a" {
+		t.Fatalf("on %s", h.current())
+	}
+	h.keys = []string{"/", "m", "a", "i", "enter", "enter"}
+	h.runIn(h.repo.Dir, "", true, "switch")
+	if h.current() != "main" {
+		t.Fatalf("search: on %s", h.current())
+	}
+	h.keys = []string{"q"}
+	h.runIn(h.repo.Dir, "", true, "switch")
+	if h.current() != "main" {
+		t.Fatal("cancel switched branches")
 	}
 }

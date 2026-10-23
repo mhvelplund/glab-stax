@@ -9,6 +9,7 @@ import (
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/glab"
 	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 func newCheckoutCmd(app *App) *cobra.Command {
@@ -135,7 +136,7 @@ func (a *App) stackChoices(f *stack.File) ([]stackChoice, *glab.Client) {
 				tracked[b.MR.IID] = true
 			}
 		}
-		out = append(out, stackChoice{label: fmt.Sprintf("local   %s ← %s", s.Trunk, strings.Join(branchNames(s.Active()), " ← ")), local: s})
+		out = append(out, stackChoice{label: fmt.Sprintf("%s ← %s", s.Trunk, strings.Join(branchNames(s.Active()), " ← ")), local: s})
 	}
 	c, err := a.gitlab(a.defaultRemote())
 	if err != nil {
@@ -156,7 +157,7 @@ func (a *App) stackChoices(f *stack.File) ([]stackChoice, *glab.Client) {
 			tracked[m.IID] = true
 			parts = append(parts, fmt.Sprintf("!%d %s", m.IID, m.Branch))
 		}
-		out = append(out, stackChoice{label: fmt.Sprintf("remote  %s ← %s", info.Trunk, strings.Join(parts, " ← ")), remote: info})
+		out = append(out, stackChoice{label: fmt.Sprintf("%s ← %s", info.Trunk, strings.Join(parts, " ← ")), remote: info})
 	}
 	return out, c
 }
@@ -169,15 +170,23 @@ func (a *App) pickStack(f *stack.File) (string, error) {
 	if len(choices) == 0 {
 		return "", exitcode.New(exitcode.NotInStack, "no stacks found locally or on GitLab")
 	}
-	labels := make([]string, len(choices))
+	items := make([]tui.Item, len(choices))
 	for i, ch := range choices {
-		labels[i] = ch.label
+		tab := 1
+		if ch.remote != nil {
+			tab = 2
+		}
+		items[i] = tui.Item{Title: ch.label, Tab: tab}
 	}
-	i, err := a.choose("Check out which stack?", labels)
-	if err != nil {
+	p := tui.NewPicker("Check out a stack", items)
+	p.Tabs = []string{"All", "Local", "Remote"}
+	if _, err := a.runTUI(p); err != nil {
 		return "", err
 	}
-	ch := choices[i]
+	if p.Chosen < 0 {
+		return "", exitcode.New(exitcode.Generic, "checkout cancelled")
+	}
+	ch := choices[p.Chosen]
 	if ch.local != nil {
 		return ch.local.Top().Name, nil
 	}

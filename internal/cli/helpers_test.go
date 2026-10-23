@@ -22,6 +22,8 @@ type harness struct {
 	clock time.Time
 	tick  time.Duration
 	slept time.Duration
+	// keys scripts the next full-screen editor.
+	keys []string
 }
 
 func (h *harness) now() time.Time {
@@ -54,6 +56,7 @@ func (h *harness) runIn(dir, stdin string, interactive bool, args ...string) res
 		Interactive: interactive,
 		Now:         h.now,
 		Sleep:       func(d time.Duration) { h.slept += d },
+		RunTUI:      scripted(h.keys...),
 		NewGitLab: func(string) (*glab.Client, error) {
 			c := h.gl.Client()
 			if h.runner != nil {
