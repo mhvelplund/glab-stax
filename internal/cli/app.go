@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/git"
 	"github.com/mhvelplund/glab-stax/internal/stack"
 )
@@ -64,7 +65,12 @@ func (a *App) load() (*stack.File, error) {
 }
 
 // mutate locks the store, loads it, runs fn and saves the result if fn succeeds.
+// It refuses to run while a multi-step operation is paused.
 func (a *App) mutate(fn func(f *stack.File) error) error {
+	return a.mutateWith(false, fn)
+}
+
+func (a *App) mutateWith(allowPaused bool, fn func(f *stack.File) error) error {
 	st, err := a.store()
 	if err != nil {
 		return err
@@ -74,6 +80,11 @@ func (a *App) mutate(fn func(f *stack.File) error) error {
 		return err
 	}
 	defer unlock()
+	if !allowPaused {
+		if err := checkPaused(st); err != nil {
+			return err
+		}
+	}
 	f, err := st.Load()
 	if err != nil {
 		return err
@@ -82,6 +93,16 @@ func (a *App) mutate(fn func(f *stack.File) error) error {
 		return err
 	}
 	return st.Save(f)
+}
+
+func checkPaused(st stack.Store) error {
+	switch {
+	case st.HasJournal(stack.RebaseJournal):
+		return exitcode.New(exitcode.RebaseInProgress, "a stack rebase is paused; run `glab stax rebase --continue` or `--abort` first")
+	case st.HasJournal(stack.ModifyJournal):
+		return exitcode.New(exitcode.RebaseInProgress, "a stack modify is paused; run `glab stax modify --continue` or `--abort` first")
+	}
+	return nil
 }
 
 // currentStack resolves the stack for the checked-out branch.

@@ -24,8 +24,9 @@ Work in progress. Available today:
 | `add [branch]` | Add a layer on top (`-m`, `-A`, `-u`) |
 | `view` | Show the stack (`--short`, `--json`) |
 | `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`) |
+| `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
 
-Planned, following gh-stack v0.2.1: `rebase`, `sync`, `push`, `submit`, `link`,
+Planned, following gh-stack v0.2.1: `sync`, `push`, `submit`, `link`,
 `merge`, `checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
 
 ## Requirements
@@ -69,7 +70,13 @@ git commit -am "Add user model"    # commit as much as you like on each layer
 glab stax add -Am "Add login API"  # new layer named MM-DD-add_login_api, with a commit
 glab stax view                     # show the stack
 glab stax down                     # move toward the trunk
+git commit --amend                 # rewrite a lower layer...
+glab stax rebase                   # ...and restack everything above it
 ```
+
+If a rebase hits a conflict, resolve it, `git add` the files and run
+`glab stax rebase --continue`, or undo the whole operation with
+`glab stax rebase --abort`.
 
 Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never
 committed.

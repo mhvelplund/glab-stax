@@ -74,3 +74,15 @@ func run(t *testing.T, dir, name string, args ...string) string {
 	}
 	return strings.TrimRight(string(out), "\n")
 }
+
+// PushFromElsewhere commits file on branch in a separate clone and pushes it,
+// simulating someone else updating the remote.
+func (r *Repo) PushFromElsewhere(branch, file, content, msg string) string {
+	r.t.Helper()
+	other := filepath.Join(r.t.TempDir(), "other")
+	run(r.t, filepath.Dir(other), "git", "clone", "--quiet", "--branch", branch, r.Origin, other)
+	o := &Repo{t: r.t, Dir: other, Origin: r.Origin}
+	sha := o.Commit(file, content, msg)
+	o.Git("push", "--quiet", "origin", branch)
+	return sha
+}

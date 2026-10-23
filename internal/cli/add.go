@@ -45,19 +45,18 @@ func (a *App) runAdd(o addOptions, name string) error {
 		return exitcode.New(exitcode.InvalidArgs, "-A and -u require -m")
 	}
 	g := a.repo()
-	cur, err := g.CurrentBranch()
-	if err != nil {
-		return err
-	}
-	if cur == "" {
-		return exitcode.New(exitcode.InvalidArgs, "HEAD is detached; check out the top branch of a stack")
-	}
 	wantsCommit := o.message != ""
 
 	return a.mutate(func(f *stack.File) error {
+		cur, err := g.CurrentBranch()
+		if err != nil {
+			return err
+		}
+		if cur == "" {
+			return exitcode.New(exitcode.InvalidArgs, "HEAD is detached; check out the top branch of a stack")
+		}
 		s := f.Find(cur)
 		if s == nil {
-			var err error
 			if s, err = a.offerInit(f, cur); err != nil {
 				return err
 			}

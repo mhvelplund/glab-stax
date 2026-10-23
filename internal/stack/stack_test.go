@@ -111,3 +111,26 @@ func TestRemoveStack(t *testing.T) {
 		t.Fatalf("Remove left %+v", f.Stacks)
 	}
 }
+
+func TestJournal(t *testing.T) {
+	st := Store{Dir: t.TempDir()}
+	var v struct{ N int }
+	if ok, err := st.LoadJournal(RebaseJournal, &v); ok || err != nil {
+		t.Fatalf("empty LoadJournal = %v, %v", ok, err)
+	}
+	if err := st.SaveJournal(RebaseJournal, struct{ N int }{3}); err != nil {
+		t.Fatal(err)
+	}
+	if !st.HasJournal(RebaseJournal) {
+		t.Fatal("HasJournal = false")
+	}
+	if ok, err := st.LoadJournal(RebaseJournal, &v); !ok || err != nil || v.N != 3 {
+		t.Fatalf("LoadJournal = %v, %v, %+v", ok, err, v)
+	}
+	if err := st.ClearJournal(RebaseJournal); err != nil || st.HasJournal(RebaseJournal) {
+		t.Fatalf("ClearJournal: %v", err)
+	}
+	if err := st.ClearJournal(RebaseJournal); err != nil {
+		t.Fatalf("ClearJournal twice: %v", err)
+	}
+}

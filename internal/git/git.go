@@ -302,3 +302,37 @@ func (r *Repo) ValidBranchName(name string) bool {
 	_, err := r.Run("check-ref-format", "--branch", name)
 	return err == nil && !strings.HasPrefix(name, "-")
 }
+
+// RunEnv executes git with extra environment variables.
+func (r *Repo) RunEnv(env []string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.Dir
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", &Error{Args: args, Stderr: stderr.String() + stdout.String(), Err: err}
+	}
+	return strings.TrimRight(stdout.String(), "\n"), nil
+}
+
+// ForkPoint returns `git merge-base --fork-point base branch`.
+func (r *Repo) ForkPoint(base, branch string) (string, error) {
+	return r.Run("merge-base", "--fork-point", base, branch)
+}
+
+// ConflictLines returns the 1-based line numbers of conflict markers in file.
+func (r *Repo) ConflictLines(file string) []int {
+	data, err := os.ReadFile(filepath.Join(r.Dir, file))
+	if err != nil {
+		return nil
+	}
+	var lines []int
+	for i, l := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(l, "<<<<<<< ") {
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
+}
