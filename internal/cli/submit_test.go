@@ -151,13 +151,32 @@ func TestSubmitUsesTemplateAndPrompts(t *testing.T) {
 	h.must("init", "a")
 	h.repo.Commit("a.txt", "a\n", "a1")
 
-	r := h.runIn(h.repo.Dir, "My title\n", true, "submit")
+	// Edit the title in the editor: clear "a1", type "My title", submit.
+	h.keys = []string{"enter", "backspace", "backspace", "M", "y", " ", "t", "i", "t", "l", "e", "ctrl+s"}
+	r := h.runIn(h.repo.Dir, "", true, "submit")
 	if r.e != nil {
 		t.Fatal(r.e, r.err)
 	}
 	mr := h.gl.MRs[1]
 	if mr.Title != "My title" || mr.Draft || !strings.HasPrefix(mr.Description, "## Checklist\n") {
 		t.Fatalf("MR = %+v", mr)
+	}
+}
+
+func TestSubmitEditorSkipAndCancel(t *testing.T) {
+	h := threeLayers(t)
+	h.keys = []string{"q"}
+	r := h.runIn(h.repo.Dir, "", true, "submit")
+	if r.e == nil || h.remoteSHA("a") != "" {
+		t.Fatalf("cancel pushed or succeeded: %v", r.e)
+	}
+	// Skip b (and therefore c): only a gets an MR, but all three are pushed.
+	h.keys = []string{"j", "space", "ctrl+s"}
+	if r := h.runIn(h.repo.Dir, "", true, "submit"); r.e != nil {
+		t.Fatal(r.e, r.err)
+	}
+	if len(h.gl.MRs) != 1 || h.gl.MRs[1].SourceBranch != "a" || h.remoteSHA("c") == "" {
+		t.Fatalf("MRs = %d, c pushed = %v", len(h.gl.MRs), h.remoteSHA("c") != "")
 	}
 }
 

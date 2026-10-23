@@ -2,7 +2,6 @@ package cli
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/mhvelplund/glab-stax/internal/exitcode"
 	"github.com/mhvelplund/glab-stax/internal/glab"
 	"github.com/mhvelplund/glab-stax/internal/stack"
+	"github.com/mhvelplund/glab-stax/internal/tui"
 )
 
 type submitOptions struct {
@@ -33,6 +33,11 @@ Steps:
   2. Creates MRs for branches that have none
   3. Fixes target branches of existing MRs
   4. Updates the stack block in every MR description
+
+In a terminal, a full-screen editor opens first: choose which new branches get
+an MR (skipped ones are still pushed), and edit each title, description and
+ready/draft state; ^s submits, q cancels without pushing. New MRs default to
+ready in the editor.
 
 With --auto (or outside a terminal), titles come from the commits and new MRs
 are created as drafts unless --open is passed. --open also marks existing
@@ -70,6 +75,12 @@ func (a *App) runSubmit(o submitOptions) error {
 			return nil
 		}
 		g := a.repo()
+		var plan map[string]*tui.SubmitNode
+		if a.Interactive && !o.auto {
+			if plan, err = a.submitEditor(s, known); err != nil {
+				return err
+			}
+		}
 		_ = g.Fetch(remote) // refresh tracking refs for --force-with-lease; may fail for new remotes
 		if err := engine.Push(g, remote, branchNames(active)); err != nil {
 			return err
@@ -78,7 +89,7 @@ func (a *App) runSubmit(o submitOptions) error {
 
 		var errs []error
 		for _, b := range active {
-			if err := a.ensureMR(c, s, b, known, o); err != nil {
+			if err := a.ensureMR(c, s, b, known, o, plan); err != nil {
 				a.infof("Warning: %s: %v", b.Name, err)
 				errs = append(errs, err)
 			}
@@ -108,11 +119,20 @@ func pruneFullyMerged(s *stack.Stack) {
 	s.Branches = s.Active()
 }
 
-func (a *App) ensureMR(c *glab.Client, s *stack.Stack, b *stack.Branch, known map[string]*glab.MR, o submitOptions) error {
+func (a *App) ensureMR(c *glab.Client, s *stack.Stack, b *stack.Branch, known map[string]*glab.MR, o submitOptions, plan map[string]*tui.SubmitNode) error {
 	target := s.Parent(b.Name)
 	mr := known[b.Name]
 	if mr == nil || !mr.Open() {
-		return a.createMR(c, b, target, known, o)
+		if plan != nil {
+			n := plan[b.Name]
+			if n == nil || !n.Include {
+				a.infof("Pushed %s without an MR", b.Name)
+				return nil
+			}
+			return a.createMR(c, b, target, known, n.Title, n.Body, n.Draft)
+		}
+		title, body := a.defaultMRText(target, b.Name)
+		return a.createMR(c, b, target, known, title, body, !o.open)
 	}
 	if mr.AutoMerge {
 		if err := c.CancelAutoMerge(mr.IID); err != nil {
@@ -141,22 +161,7 @@ func (a *App) ensureMR(c *glab.Client, s *stack.Stack, b *stack.Branch, known ma
 	return nil
 }
 
-func (a *App) createMR(c *glab.Client, b *stack.Branch, target string, known map[string]*glab.MR, o submitOptions) error {
-	title, body := engine.DefaultTitleBody(a.repo(), target, b.Name)
-	if tmpl := a.mrTemplate(); tmpl != "" {
-		body = tmpl
-	}
-	draft := !o.open
-	if a.Interactive && !o.auto {
-		answer, err := a.input(fmt.Sprintf("Title for the %s MR [%s]:", b.Name, title))
-		if err != nil {
-			return err
-		}
-		if answer != "" {
-			title = answer
-		}
-		draft = false
-	}
+func (a *App) createMR(c *glab.Client, b *stack.Branch, target string, known map[string]*glab.MR, title, body string, draft bool) error {
 	mr, err := c.CreateMR(glab.NewMR{Source: b.Name, Target: target, Title: title, Description: body, Draft: draft})
 	if err != nil {
 		return err
@@ -165,6 +170,50 @@ func (a *App) createMR(c *glab.Client, b *stack.Branch, target string, known map
 	b.MR = &stack.MR{IID: mr.IID, URL: mr.WebURL}
 	a.infof("Created !%d for %s: %s", mr.IID, b.Name, mr.WebURL)
 	return nil
+}
+
+// defaultMRText derives a title from the commits and uses the project's MR
+// template, if any, as the description.
+func (a *App) defaultMRText(target, branch string) (string, string) {
+	title, body := engine.DefaultTitleBody(a.repo(), target, branch)
+	if tmpl := a.mrTemplate(); tmpl != "" {
+		body = tmpl
+	}
+	return title, body
+}
+
+// submitEditor opens the full-screen editor and returns the plan for new MRs,
+// keyed by branch. Nothing has been pushed yet, so cancelling changes nothing.
+func (a *App) submitEditor(s *stack.Stack, known map[string]*glab.MR) (map[string]*tui.SubmitNode, error) {
+	var nodes []*tui.SubmitNode
+	for _, b := range s.Active() {
+		n := &tui.SubmitNode{Branch: b.Name, Target: s.Parent(b.Name)}
+		if mr := known[b.Name]; mr != nil && mr.Open() {
+			n.IID, n.URL, n.State = mr.IID, mr.WebURL, "open"
+			if mr.Draft {
+				n.State = "draft"
+			}
+		} else {
+			n.Include = true
+			n.Title, n.Body = a.defaultMRText(n.Target, b.Name)
+		}
+		nodes = append(nodes, n)
+	}
+	e := tui.NewSubmitEditor(nodes)
+	if _, err := a.runTUI(e); err != nil {
+		return nil, err
+	}
+	if !e.Submitted {
+		return nil, exitcode.New(exitcode.Generic, "submit cancelled; nothing was pushed")
+	}
+	plan := map[string]*tui.SubmitNode{}
+	for _, n := range e.Nodes {
+		if e.LinkOnly {
+			n.Include = false
+		}
+		plan[n.Branch] = n
+	}
+	return plan, nil
 }
 
 // mrTemplate returns the project's default merge request template, if any.

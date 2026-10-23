@@ -1,5 +1,7 @@
 # glab stax
 
+<img src=".img/slop-small.jpg" alt="For robots, by robots. Vibed without love or skill." height="24" />
+
 Stacked merge requests for GitLab, where each layer of the stack is a branch that can hold **any number of commits**.
 
 `glab stax` is a **derivative work of [gh-stack](https://github.com/github/gh-stack)** by GitHub, Inc., released under
@@ -14,23 +16,23 @@ gh-stack's multi-commit model. It does not use GitLab's stacked diffs UI.
 
 Work in progress. Available today:
 
-| Command                                        | Description                                                                                                                                                  |
-|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `init [branches...]`                           | Start a stack (`-b/--base` sets the trunk)                                                                                                                   |
-| `add [branch]`                                 | Add a layer on top (`-m`, `-A`, `-u`)                                                                                                                        |
-| `view`                                         | Show the stack (`--short`, `--json`)                                                                                                                         |
-| `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`)                                                                                                                          |
-| `push`                                         | Push all unmerged branches with `--force-with-lease` (`--remote`)                                                                                            |
-| `submit`                                       | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`)                                                   |
-| `sync`                                         | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`)                                             |
-| `merge [<mr>]`                                 | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`) |
-| `switch`                                       | Pick a branch of the current stack in a full-screen picker (`--print-path`)                                                                                  |
-| `checkout [<mr> \| <url> \| <branch>]`         | Check out a stack, setting it up from GitLab if needed; without arguments, pick from local and GitLab stacks (`--print-path`)                                |
-| `link <branch-or-mr>...`                       | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`)                                                                   |
-| `unstack [<mr>]`                               | Remove a stack locally and its block on GitLab (`--local`; alias `delete`)                                                                                   |
-| `rebase [branch]`                              | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`)                  |
+| Command                                        | Description                                                                                                                                                                                        |
+|------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `init [branches...]`                           | Start a stack (`-b/--base` sets the trunk)                                                                                                                                                         |
+| `add [branch]`                                 | Add a layer on top (`-m`, `-A`, `-u`)                                                                                                                                                              |
+| `view`                                         | Show the stack (`--short`, `--json`)                                                                                                                                                               |
+| `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`)                                                                                                                                                                |
+| `push`                                         | Push all unmerged branches with `--force-with-lease` (`--remote`)                                                                                                                                  |
+| `submit`                                       | Push and create/update one MR per branch, each targeting the branch below; in a terminal, edit titles, descriptions and draft state in a full-screen editor first (`--auto`, `--open`, `--remote`) |
+| `sync`                                         | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`)                                                                                   |
+| `merge [<mr>]`                                 | Merge MRs bottom-up to the chosen one, restacking and retargeting between merges (`--squash`, `--merge`, `--rebase`, `--merge-method`, `--yes`, `--timeout`)                                       |
+| `switch`                                       | Pick a branch of the current stack in a full-screen picker (`--print-path`)                                                                                                                        |
+| `checkout [<mr> \| <url> \| <branch>]`         | Check out a stack, setting it up from GitLab if needed; without arguments, pick from local and GitLab stacks (`--print-path`)                                                                      |
+| `link <branch-or-mr>...`                       | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`)                                                                                                         |
+| `unstack [<mr>]`                               | Remove a stack locally and its block on GitLab (`--local`; alias `delete`)                                                                                                                         |
+| `rebase [branch]`                              | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`)                                                        |
 
-Planned, following gh-stack v0.2.1: `modify`, `alias`, `feedback`, and a full-screen editor for `submit`.
+Planned, following gh-stack v0.2.1: `modify`, `alias`, `feedback`.
 
 ## Requirements
 
@@ -79,9 +81,10 @@ glab stax submit                   # push and open one MR per layer
 glab stax sync --prune             # after the bottom MR merges: restack, retarget, clean up
 ```
 
-`glab stax submit --auto` creates draft MRs titled from the commits; without `--auto` you are prompted for titles. Every
-MR gets a block at the end of its description that lists the whole stack, so reviewers can move between layers.
-glab-stax keeps that block up to date; text outside it is never touched.
+`glab stax submit --auto` creates draft MRs titled from the commits; without `--auto` a full-screen editor lets you pick
+which branches get MRs and edit each title, description and draft state. Every MR gets a block at the end of its
+description that lists the whole stack, so reviewers can move between layers. glab-stax keeps that block up to date;
+text outside it is never touched.
 
 If a rebase hits a conflict, resolve it, `git add` the files and run `glab stax rebase --continue`, or undo the whole
 operation with `glab stax rebase --abort`.
