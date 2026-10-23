@@ -25,11 +25,16 @@ type App struct {
 	Out, Err    io.Writer
 	Interactive bool // stdin and stdout are terminals
 	OutIsTTY    bool
+	ErrIsTTY    bool
 	Now         func() time.Time
 	// Sleep waits between GitLab polls (tests make it instant).
 	Sleep func(time.Duration)
 	// RunTUI runs a full-screen editor (tests drive it with scripted keys).
 	RunTUI func(m tea.Model) (tea.Model, error)
+	// Glab runs the glab CLI for non-API commands (tests use a fake).
+	Glab glab.Runner
+	// OpenURL opens a browser (tests capture the URL).
+	OpenURL func(url string) error
 	// NewGitLab overrides how GitLab clients are built (tests use a fake).
 	NewGitLab func(remote string) (*glab.Client, error)
 
@@ -50,6 +55,7 @@ func NewApp() (*App, error) {
 		Err:         os.Stderr,
 		Interactive: outTTY && term.IsTerminal(int(os.Stdin.Fd())),
 		OutIsTTY:    outTTY,
+		ErrIsTTY:    term.IsTerminal(int(os.Stderr.Fd())),
 		Now:         time.Now,
 		Sleep:       time.Sleep,
 	}, nil

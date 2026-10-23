@@ -237,9 +237,14 @@ func (m *Modifier) build(s *stack.Stack, st *modifyState, from int) error {
 		if i > 0 {
 			start = st.NewTips[st.Layers[i-1].Name]
 		}
-		// Untouched layers on an unchanged base keep their commits.
-		if len(l.Sources) == 1 && l.Sources[0] == l.Orig && st.Ranges[l.Orig].Base == start {
-			st.NewTips[l.Name] = st.Ranges[l.Orig].Tip
+		// A layer that still starts with its own commits on an unchanged base
+		// keeps them; only commits added on top are cherry-picked.
+		sources := l.Sources
+		if len(sources) > 0 && sources[0] == l.Orig && st.Ranges[l.Orig].Base == start {
+			start, sources = st.Ranges[l.Orig].Tip, sources[1:]
+		}
+		if len(sources) == 0 {
+			st.NewTips[l.Name] = start
 			continue
 		}
 		if _, err := m.Repo.Run("checkout", "--quiet", "--detach", start); err != nil {
@@ -252,7 +257,7 @@ func (m *Modifier) build(s *stack.Stack, st *modifyState, from int) error {
 		// List each source's commits explicitly: several A..B ranges in one
 		// cherry-pick would be combined as a single set and drop commits.
 		var picks []string
-		for _, src := range l.Sources {
+		for _, src := range sources {
 			r := st.Ranges[src]
 			out, err := m.Repo.Run("rev-list", "--reverse", r.Base+".."+r.Tip)
 			if err != nil {

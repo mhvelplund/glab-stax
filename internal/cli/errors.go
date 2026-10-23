@@ -26,6 +26,8 @@ func wrapArgs(cmd *cobra.Command) {
 
 // Execute runs the root command and maps cobra's own usage errors to InvalidArgs.
 func Execute(app *App, args []string) error {
+	notify := app.updateNotifier()
+	defer notify()
 	root := NewRoot(app)
 	root.SetArgs(args)
 	err := root.Execute()

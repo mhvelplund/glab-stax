@@ -31,9 +31,11 @@ Work in progress. Available today:
 | `modify`                                       | Restructure the stack in a full-screen editor: drop, fold, insert, reorder, rename, undo (`--continue`, `--abort`)                                                                                 |
 | `link <branch-or-mr>...`                       | Create or extend a stack on GitLab without local tracking (`--base`, `--open`, `--remote`)                                                                                                         |
 | `unstack [<mr>]`                               | Remove a stack locally and its block on GitLab (`--local`; alias `delete`)                                                                                                                         |
+| `alias [name]`                                 | Register `glab stax` and install a `gs` wrapper in `~/.local/bin` (`--remove`)                                                                                                                     |
+| `feedback [title]`                             | Open an issue for glab-stax in the browser                                                                                                                                                         |
 | `rebase [branch]`                              | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`)                                                        |
 
-Planned, following gh-stack v0.2.1: `alias`, `feedback`.
+This covers every command of gh-stack v0.2.1.
 
 ## Requirements
 
@@ -53,11 +55,13 @@ alias so that it runs as `glab stax`.
 
    Make sure `$(go env GOPATH)/bin` is on your `PATH`.
 
-2. Register the alias:
+2. Register the `glab stax` alias and a `gs` shortcut in `~/.local/bin`:
 
    ```sh
-   glab alias set stax 'glab-stax "$@"' --shell
+   glab-stax alias
    ```
+
+   This runs `glab alias set stax 'glab-stax "$@"' --shell` for you.
 
 3. Check that it works:
 
@@ -100,6 +104,20 @@ Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never 
 - `merge` cannot be atomic on GitLab: MRs are merged one at a time, and the command stops at the first failure, leaving
   earlier MRs merged.
 
+### Environment variables
+
+| Variable                       | Effect                                                         |
+|--------------------------------|----------------------------------------------------------------|
+| `GLAB_STAX_NO_UPDATE_NOTIFIER` | Any non-empty value disables the daily check for new releases. |
+| `GLAB_STAX_HYPERLINKS`         | `1` or `0` forces clickable MR links in `view` on or off.      |
+| `GIT_PAGER`, `PAGER`           | Pager for `view` (default `less -R`).                          |
+| `VISUAL`, `EDITOR`             | Editor for MR descriptions in the `submit` editor (`^e`).      |
+
+### Agent skill
+
+[`skills/glab-stax/SKILL.md`](skills/glab-stax/SKILL.md) teaches coding agents how to drive `glab stax`
+non-interactively.
+
 ### Exit codes
 
 | Code | Meaning                          |
@@ -111,7 +129,7 @@ Stack metadata lives in `.git/glab-stax` (shared by all worktrees) and is never 
 | 4    | GitLab (`glab`) failure          |
 | 5    | Invalid arguments or flags       |
 | 6    | Disambiguation required          |
-| 7    | Rebase already in progress       |
+| 7    | Operation already in progress    |
 | 8    | Stack locked by another process  |
 
 ## Development

@@ -14,7 +14,7 @@ func NewRoot(app *App) *cobra.Command {
 		Use:           "glab-stax",
 		Short:         "Stacked merge requests for GitLab, gh-stack style",
 		Long:          "glab-stax manages stacks of branches, each with any number of commits,\nand one GitLab merge request per branch. Invoke it as `glab stax` after\nrunning `glab-stax alias`.",
-		Version:       Version,
+		Version:       version(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -35,6 +35,8 @@ func NewRoot(app *App) *cobra.Command {
 		newModifyCmd(app),
 		newLinkCmd(app),
 		newUnstackCmd(app),
+		newAliasCmd(app),
+		newFeedbackCmd(app),
 	)
 	root.AddCommand(newNavCmds(app)...)
 	wrapArgs(root)
