@@ -161,3 +161,21 @@ func (a *App) confirm(prompt string, def bool) (bool, error) {
 		return false, nil
 	}
 }
+
+// choose asks the user to pick one of options and returns its index.
+func (a *App) choose(prompt string, options []string) (int, error) {
+	fmt.Fprintln(a.Err, prompt)
+	for i, o := range options {
+		fmt.Fprintf(a.Err, "  %d) %s\n", i+1, o)
+	}
+	for {
+		ans, err := a.input(fmt.Sprintf("Choose 1-%d:", len(options)))
+		if err != nil {
+			return 0, err
+		}
+		var n int
+		if _, err := fmt.Sscanf(ans, "%d", &n); err == nil && n >= 1 && n <= len(options) {
+			return n - 1, nil
+		}
+	}
+}

@@ -18,20 +18,23 @@ type RebaseOptions struct {
 	NoTrunk       bool   // skip the fetch and leave the bottom layer where it is
 	Remote        string // defaults to the stack's remote
 	PreserveDates bool   // --committer-date-is-author-date
+	// AbortOnConflict restores every branch instead of pausing on a conflict.
+	AbortOnConflict bool
 }
 
 // rebaseState is the journal for a paused cascade rebase.
 type rebaseState struct {
-	StackKey       string            `json:"stackKey"` // name of the stack's first branch
-	OriginalBranch string            `json:"originalBranch"`
-	OriginalDir    string            `json:"originalDir"`
-	RestoreRefs    map[string]string `json:"restoreRefs"`  // branch tips before anything moved, for --abort
-	OriginalRefs   map[string]string `json:"originalRefs"` // tips after fast-forwarding, before rebasing
-	TrunkSHA       string            `json:"trunkSha"`
-	Order          []string          `json:"order"` // layers to rebase, bottom first
-	Next           int               `json:"next"`  // index in Order of the layer in progress
-	ConflictDir    string            `json:"conflictDir,omitempty"`
-	PreserveDates  bool              `json:"preserveDates,omitempty"`
+	StackKey        string            `json:"stackKey"` // name of the stack's first branch
+	OriginalBranch  string            `json:"originalBranch"`
+	OriginalDir     string            `json:"originalDir"`
+	RestoreRefs     map[string]string `json:"restoreRefs"`  // branch tips before anything moved, for --abort
+	OriginalRefs    map[string]string `json:"originalRefs"` // tips after fast-forwarding, before rebasing
+	TrunkSHA        string            `json:"trunkSha"`
+	Order           []string          `json:"order"` // layers to rebase, bottom first
+	Next            int               `json:"next"`  // index in Order of the layer in progress
+	ConflictDir     string            `json:"conflictDir,omitempty"`
+	PreserveDates   bool              `json:"preserveDates,omitempty"`
+	AbortOnConflict bool              `json:"abortOnConflict,omitempty"`
 }
 
 // Rebaser runs cascade rebases. Repo is the worktree the command was run from.
@@ -70,6 +73,7 @@ func (r *Rebaser) Start(s *stack.Stack, o RebaseOptions) error {
 	st := &rebaseState{
 		StackKey: s.Branches[0].Name, OriginalBranch: cur, OriginalDir: top,
 		RestoreRefs: r.tips(s), Order: order, PreserveDates: o.PreserveDates,
+		AbortOnConflict: o.AbortOnConflict,
 	}
 	if o.NoTrunk {
 		if st.TrunkSHA, err = r.Repo.RevParse(s.Trunk); err != nil {
@@ -80,7 +84,7 @@ func (r *Rebaser) Start(s *stack.Stack, o RebaseOptions) error {
 		if remote == "" {
 			remote = s.Remote
 		}
-		if st.TrunkSHA, err = r.updateFromRemote(s, remote); err != nil {
+		if st.TrunkSHA, err = r.UpdateFromRemote(s, remote); err != nil {
 			return err
 		}
 	}
@@ -138,7 +142,9 @@ func (r *Rebaser) Abort(f *stack.File) error {
 	if err := r.restoreCheckout(&st); err != nil {
 		return err
 	}
-	r.Log("Rebase aborted; all branches restored")
+	if !st.AbortOnConflict {
+		r.Log("Rebase aborted; all branches restored")
+	}
 	return r.Store.ClearJournal(stack.RebaseJournal)
 }
 
@@ -222,9 +228,9 @@ func (r *Rebaser) tips(s *stack.Stack) map[string]string {
 	return refs
 }
 
-// updateFromRemote fetches, fast-forwards the trunk and any layer that is
+// UpdateFromRemote fetches, fast-forwards the trunk and any layer that is
 // behind its remote branch, and returns the SHA to rebase the bottom layer onto.
-func (r *Rebaser) updateFromRemote(s *stack.Stack, remote string) (string, error) {
+func (r *Rebaser) UpdateFromRemote(s *stack.Stack, remote string) (string, error) {
 	if err := r.Repo.Fetch(remote); err != nil {
 		return "", exitcode.Wrap(exitcode.Generic, fmt.Errorf("fetch %s: %w", remote, err))
 	}
@@ -337,9 +343,16 @@ func (r *Rebaser) handleFailure(st *rebaseState, wt *git.Repo, err error) error 
 	if in, _ := wt.RebaseInProgress(); !in {
 		return fmt.Errorf("rebase of %s failed: %w", st.Order[st.Next], err)
 	}
+	branch := st.Order[st.Next]
+	if st.AbortOnConflict {
+		if aerr := r.Abort(nil); aerr != nil {
+			return fmt.Errorf("conflict while rebasing %s, and restoring branches failed: %w", branch, aerr)
+		}
+		return exitcode.New(exitcode.RebaseConflict, "conflict while rebasing %s; all branches were restored. Run `glab stax rebase` to resolve it", branch)
+	}
 	files, _ := wt.ConflictedFiles()
-	r.reportConflict(wt, st.Order[st.Next], files)
-	return exitcode.New(exitcode.RebaseConflict, "conflict while rebasing %s", st.Order[st.Next])
+	r.reportConflict(wt, branch, files)
+	return exitcode.New(exitcode.RebaseConflict, "conflict while rebasing %s", branch)
 }
 
 func (r *Rebaser) reportConflict(wt *git.Repo, branch string, files []string) {

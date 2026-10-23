@@ -26,9 +26,10 @@ Work in progress. Available today:
 | `up [n]`, `down [n]`, `top`, `bottom`, `trunk` | Navigate the stack (`--print-path`) |
 | `push` | Push all unmerged branches with `--force-with-lease` (`--remote`) |
 | `submit` | Push and create/update one MR per branch, each targeting the branch below (`--auto`, `--open`, `--remote`) |
+| `sync` | Fetch, reconcile with the stack on GitLab, rebase if the trunk moved, push, retarget MRs (`--prune`, `--remote`) |
 | `rebase [branch]` | Cascade-rebase the stack onto the trunk (`--downstack`, `--upstack`, `--no-trunk`, `--continue`, `--abort`, `--remote`, `--preserve-dates`) |
 
-Planned, following gh-stack v0.2.1: `sync`, `link`,
+Planned, following gh-stack v0.2.1: `link`,
 `merge`, `checkout`, `switch`, `modify`, `unstack`, `alias`, `feedback`.
 
 ## Requirements
@@ -75,6 +76,7 @@ glab stax down                     # move toward the trunk
 git commit --amend                 # rewrite a lower layer...
 glab stax rebase                   # ...and restack everything above it
 glab stax submit                   # push and open one MR per layer
+glab stax sync --prune             # after the bottom MR merges: restack, retarget, clean up
 ```
 
 `glab stax submit --auto` creates draft MRs titled from the commits; without

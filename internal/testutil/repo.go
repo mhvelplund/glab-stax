@@ -86,3 +86,11 @@ func (r *Repo) PushFromElsewhere(branch, file, content, msg string) string {
 	o.Git("push", "--quiet", "origin", branch)
 	return sha
 }
+
+// Clone returns a fresh clone of the origin, e.g. to act as a teammate.
+func (r *Repo) Clone() *Repo {
+	r.t.Helper()
+	other := filepath.Join(r.t.TempDir(), "clone")
+	run(r.t, filepath.Dir(other), "git", "clone", "--quiet", r.Origin, other)
+	return &Repo{t: r.t, Dir: other, Origin: r.Origin}
+}
